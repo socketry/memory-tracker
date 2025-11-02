@@ -193,5 +193,123 @@ describe Memory::Profiler::Capture do
 			capture.stop
 		end
 	end
+	
+	with "GC stress test" do
+		it "handles GC during tracking with callbacks that store state" do
+			# This test attempts to recreate the T_NONE marking bug
+			# by storing state in callbacks and forcing GC
+			
+			# Pre-allocate state objects to avoid allocation during callback
+			state_objects = 200.times.map { {index: rand} }
+			state_index = 0
+			
+			capture.track(Hash) do |klass, event, state|
+				if event == :newobj
+					# Return pre-allocated state
+					result = state_objects[state_index]
+					state_index = (state_index + 1) % state_objects.size
+					result
+				elsif event == :freeobj
+					# Just return state, don't allocate
+					state
+				end
+			end
+			
+			capture.start
+			
+			# Allocate many objects without retaining them
+			100.times do
+				{}
+			end
+			
+			# Mix old generation objects by running GC multiple times
+			3.times { GC.start }
+			
+			# Should not crash with "try to mark T_NONE object"
+			expect(capture.count_for(Hash)).to be >= 0
+			
+			capture.stop
+		end
+		
+		it "handles tracking anonymous classes that get collected" do
+			# Another way to trigger T_NONE: track a class that gets GC'd
+			anonymous_class = Class.new
+			
+			capture.track(anonymous_class)
+			capture.start
+			
+			# Allocate some instances
+			3.times { anonymous_class.new }
+			
+			# Remove reference to the class
+			anonymous_class = nil
+			
+			# Force GC multiple times to mix old generation objects
+			# and increase chance the class gets collected
+			3.times { GC.start }
+			
+			# Allocate some other objects to trigger more marking
+			1000.times { [] }
+			
+			# Force more GC to trigger marking of tracked_classes
+			3.times { GC.start }
+			
+			# Should not crash during GC marking
+			capture.stop
+		end
+		
+		it "recreates T_NONE marking failure during array join" do
+			# Recreate the specific failure from the stack trace:
+			# The bug occurs during rb_ary_join which allocates strings,
+			# triggering GC, which tries to mark classes that became T_NONE
+			
+			capture.track(String)
+			capture.start
+			
+			# Allocate many strings
+			1000.times { "test" }
+			
+			# Mix old generation objects
+			3.times { GC.start }
+			
+			# Now do array join which allocates strings and can trigger GC
+			# This matches the stack trace: /array.c:2915 rb_ary_join
+			large_array = 1000.times.map { "item_#{rand}" }
+			result = large_array.join(",")
+			
+			# Mix old generation again
+			3.times { GC.start }
+			
+			# Should not crash with "try to mark T_NONE object"
+			expect(result).not.to be == nil
+			
+			capture.stop
+		end
+		
+		it "handles GC compaction during tracking" do
+			capture.track(String) do |klass, event, state|
+				if event == :newobj
+					# Store a string as state
+					"allocated"
+				end
+			end
+			
+			capture.start
+			
+			# Allocate many strings
+			strings = 1000.times.map { "test#{rand}" }
+			
+			# Should not crash
+			expect(capture.count_for(String)).to be >= 1000
+			
+			capture.stop
+			
+			# Trigger GC compaction if available
+			begin
+				GC.verify_compaction_references(expand_heap: true, toward: :empty)
+			rescue NotImplementedError
+				# Compaction not available on this Ruby version
+			end
+		end
+	end
 end
-
