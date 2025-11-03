@@ -52,7 +52,10 @@ struct Memory_Profiler_Capture {
 	// class => VALUE (wrapped Memory_Profiler_Capture_Allocations).
 	st_table *tracked_classes;
 
-	// Is tracking enabled (via start/stop):
+	// Master switch - is tracking active? (set by start/stop)
+	int running;
+	
+	// Internal - should we queue callbacks? (temporarily disabled during queue processing)
 	int enabled;
 	
 	// Queue for new objects (processed via postponed job):
@@ -300,10 +303,12 @@ static void Memory_Profiler_Capture_newobj_handler(VALUE self, struct Memory_Pro
 	if (st_lookup(capture->tracked_classes, (st_data_t)klass, &allocations_data)) {
 		VALUE allocations = (VALUE)allocations_data;
 		struct Memory_Profiler_Capture_Allocations *record = Memory_Profiler_Allocations_get(allocations);
+		
+		// Always track counts (even during queue processing)
 		record->new_count++;
 		
-		// If we have a callback, queue the newobj for later processing
-		if (!NIL_P(record->callback)) {
+		// Only queue for callback if tracking is enabled (prevents infinite recursion)
+		if (capture->enabled && !NIL_P(record->callback)) {
 			// Push a new item onto the queue (returns pointer to write to)
 			// NOTE: realloc is safe during allocation (doesn't trigger Ruby allocation)
 			struct Memory_Profiler_Newobj_Queue_Item *newobj = Memory_Profiler_Queue_push(&capture->newobj_queue);
@@ -351,10 +356,13 @@ static void Memory_Profiler_Capture_freeobj_handler(VALUE self, struct Memory_Pr
 	if (st_lookup(capture->tracked_classes, (st_data_t)klass, &allocations_data)) {
 		VALUE allocations = (VALUE)allocations_data;
 		struct Memory_Profiler_Capture_Allocations *record = Memory_Profiler_Allocations_get(allocations);
+		
+		// Always track counts (even during queue processing)
 		record->free_count++;
 		
-		// If we have a callback and detailed tracking, queue the freeobj for later processing
-		if (!NIL_P(record->callback) && record->object_states) {
+		// Only queue for callback if tracking is enabled and we have state
+		// Note: If NEWOBJ didn't queue (enabled=0), there's no state, so this naturally skips
+		if (capture->enabled && !NIL_P(record->callback) && record->object_states) {
 			if (DEBUG_STATE) fprintf(stderr, "Memory_Profiler_Capture_freeobj_handler: Looking up state for object: %p\n", (void *)object);
 
 			// Look up state stored during NEWOBJ
@@ -431,8 +439,6 @@ static void Memory_Profiler_Capture_event_callback(VALUE data, void *ptr) {
 	struct Memory_Profiler_Capture *capture;
 	TypedData_Get_Struct(data, struct Memory_Profiler_Capture, &Memory_Profiler_Capture_type, capture);
 	
-	if (!capture->enabled) return;
-	
 	VALUE object = rb_tracearg_object(trace_arg);
 
 	// We don't want to track internal non-Object allocations:
@@ -476,6 +482,8 @@ static VALUE Memory_Profiler_Capture_alloc(VALUE klass) {
 		rb_raise(rb_eRuntimeError, "Failed to initialize hash table");
 	}
 	
+	// Initialize state flags - not running, callbacks disabled
+	capture->running = 0;
 	capture->enabled = 0;
 	
 	// Initialize both queues
@@ -507,7 +515,7 @@ static VALUE Memory_Profiler_Capture_start(VALUE self) {
 	struct Memory_Profiler_Capture *capture;
 	TypedData_Get_Struct(self, struct Memory_Profiler_Capture, &Memory_Profiler_Capture_type, capture);
 	
-	if (capture->enabled) return Qfalse;
+	if (capture->running) return Qfalse;
 	
 	// Add event hook for NEWOBJ and FREEOBJ with RAW_ARG to get trace_arg
 	rb_add_event_hook2(
@@ -517,6 +525,8 @@ static VALUE Memory_Profiler_Capture_start(VALUE self) {
 		RUBY_EVENT_HOOK_FLAG_SAFE | RUBY_EVENT_HOOK_FLAG_RAW_ARG
 	);
 	
+	// Set both flags - we're now running and callbacks are enabled
+	capture->running = 1;
 	capture->enabled = 1;
 	
 	return Qtrue;
@@ -527,11 +537,16 @@ static VALUE Memory_Profiler_Capture_stop(VALUE self) {
 	struct Memory_Profiler_Capture *capture;
 	TypedData_Get_Struct(self, struct Memory_Profiler_Capture, &Memory_Profiler_Capture_type, capture);
 	
-	if (!capture->enabled) return Qfalse;
+	if (!capture->running) return Qfalse;
 	
-	// Remove event hook using same data (self) we registered with
+	// Remove event hook using same data (self) we registered with. No more events will be queued after this point:
 	rb_remove_event_hook_with_data((rb_event_hook_func_t)Memory_Profiler_Capture_event_callback, self);
 	
+	// Flush any pending queued events before stopping. This ensures all callbacks are invoked and object_states is properly maintained.
+	Memory_Profiler_Capture_process_queues((void *)self);
+	
+	// Clear both flags - we're no longer running and callbacks are disabled
+	capture->running = 0;
 	capture->enabled = 0;
 	
 	return Qtrue;
