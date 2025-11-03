@@ -141,7 +141,7 @@ module Memory
 					if sample.sample!(count)
 						# Check if we should enable detailed tracking
 						if sample.increases >= @increases_threshold && !@call_trees.key?(klass)
-							track_with_analysis_internal(klass, allocations)
+							track(klass, allocations)
 						end
 						
 						# Notify about growth if block given
@@ -150,13 +150,19 @@ module Memory
 				end
 			end
 			
-			# Internal: Enable tracking with analysis using allocations object
-			private def track_with_analysis_internal(klass, allocations)
+			# Start tracking with call path analysis.
+			#
+			# @parameter klass [Class] The class to track with detailed analysis.
+			def track(klass, allocations = nil)
+				# Track the class and get the allocations object
+				allocations ||= @capture.track(klass)
+				
+				# Set up call tree for this class
 				tree = @call_trees[klass] = CallTree.new
 				depth = @depth
 				filter = @filter
 				
-				# Register callback on allocations object with new signature:
+				# Register callback on allocations object:
 				# - On :newobj - returns state (leaf node) which C extension stores
 				# - On :freeobj - receives state back from C extension
 				allocations.track do |klass, event, state|
@@ -166,43 +172,16 @@ module Memory
 						locations = caller_locations(1, depth)
 						filtered = locations.select(&filter)
 						unless filtered.empty?
-							# Record returns the leaf node - return it so C can store it
+							# Record returns the leaf node - return it so C can store it:
 							tree.record(filtered)
 						end
-						# Return nil or the node - C will store whatever we return
+						# Return nil or the node - C will store whatever we return.
 					when :freeobj
-						# Decrement using the state (leaf node) passed back from C
-						if state
-							state.decrement_path!
-						end
+						# Decrement using the state (leaf node) passed back from then native extension:
+						state&.decrement_path!
 					end
 				rescue Exception => error
-					warn "Error in track_with_analysis_internal: #{error.message}\n#{error.backtrace.join("\n")}"
-				end
-			end
-			
-			# Start tracking allocations for a class (count only).
-			def track(klass)
-				return if @capture.tracking?(klass)
-				
-				@capture.track(klass)
-			end
-			
-			# Start tracking with call path analysis.
-			#
-			# @parameter klass [Class] The class to track with detailed analysis.
-			def track_with_analysis(klass)
-				# Track the class if not already tracked
-				unless @capture.tracking?(klass)
-					@capture.track(klass)
-				end
-				
-				# Enable analysis by setting callback on the allocations object
-				@capture.each do |tracked_klass, allocations|
-					if tracked_klass == klass
-						track_with_analysis_internal(klass, allocations)
-						break
-					end
+					warn "Error in allocation tracking: #{error.message}\n#{error.backtrace.join("\n")}"
 				end
 			end
 			
@@ -280,11 +259,7 @@ module Memory
 			private
 			
 			def default_filter
-				->(location) {path = location.path
-																		!path.include?("/gems/") && 
-																							!path.include?("/ruby/") &&
-																							!path.start_with?("(eval)")
-				}
+				->(location) {!location.path.match?(%r{/(gems|ruby)/|\A\(eval\)})}
 			end
 		end
 	end

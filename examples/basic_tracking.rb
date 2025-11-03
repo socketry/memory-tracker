@@ -48,7 +48,7 @@ puts "\n\n=== MODE 2: With Call Path Analysis ==="
 puts "-" * 60
 
 sampler = Memory::Profiler::Sampler.new(depth: 10)
-sampler.track_with_analysis(Hash)
+sampler.track(Hash)
 sampler.start
 
 puts "Tracking Hash with call path analysis enabled"

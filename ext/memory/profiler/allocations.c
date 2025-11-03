@@ -12,8 +12,9 @@ static VALUE Memory_Profiler_Allocations = Qnil;
 
 // Helper to mark object_states table values
 static int Memory_Profiler_Allocations_object_states_mark(st_data_t key, st_data_t value, st_data_t arg) {
-	VALUE object = (VALUE)key;
-	rb_gc_mark_movable(object);
+	// Don't mark the object, we use it as a key but we never use it as an object, and we don't want to retain it.
+	// VALUE object = (VALUE)key;
+	// rb_gc_mark_movable(object);
 
 	VALUE state = (VALUE)value;
 	if (!NIL_P(state)) {
