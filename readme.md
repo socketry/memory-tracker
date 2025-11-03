@@ -9,14 +9,14 @@ Efficient memory allocation tracking focused on **retained objects only**. Autom
   - **Retained Objects Only**: Uses `RUBY_INTERNAL_EVENT_NEWOBJ` and `RUBY_INTERNAL_EVENT_FREEOBJ` to automatically track only objects that survive GC.
   - **O(1) Live Counts**: Maintains per-class counters updated on alloc/free - no heap enumeration needed\!
   - **Tree-Based Analysis**: Deduplicates common call paths using an efficient tree structure.
-  - **Native C Extension**: **Required** - uses Ruby internal events not available in pure Ruby.
-  - **Configurable Depth**: Control how deep to capture call stacks.
 
 ## Usage
 
 Please see the [project documentation](https://socketry.github.io/memory-profiler/) for more details.
 
-  - [Getting Started](https://socketry.github.io/memory-profiler/guides/getting-started/index) - This guide explains how to use `memory-profiler` to detect and diagnose memory leaks in Ruby applications.
+  - [Getting Started](https://socketry.github.io/memory-profiler/guides/getting-started/index) - This guide explains how to use `memory-profiler` to automatically detect and diagnose memory leaks in Ruby applications.
+
+  - [Rack Integration](https://socketry.github.io/memory-profiler/guides/rack-integration/index) - This guide explains how to integrate `memory-profiler` into Rack applications for automatic memory leak detection.
 
 ## Releases
 

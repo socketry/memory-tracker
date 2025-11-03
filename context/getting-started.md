@@ -1,6 +1,6 @@
 # Getting Started
 
-This guide explains how to use `memory-profiler` to detect and diagnose memory leaks in Ruby applications.
+This guide explains how to use `memory-profiler` to automatically detect and diagnose memory leaks in Ruby applications.
 
 ## Installation
 
@@ -12,218 +12,127 @@ $ bundle add memory-profiler
 
 ## Core Concepts
 
-Memory leaks happen when your application creates objects that should be garbage collected but remain referenced indefinitely. Over time, this causes memory usage to grow unbounded, eventually leading to performance degradation or out-of-memory crashes.
+Memory leaks happen when your application creates objects that should be garbage collected but remain referenced indefinitely. Over time, this causes unbounded memory growth, leading to performance degradation or crashes.
 
-`memory-profiler` helps you find memory leaks by tracking object allocations in real-time:
-
-- **{ruby Memory::Profiler::Capture}** monitors allocations using Ruby's internal NEWOBJ/FREEOBJ events.
-- **{ruby Memory::Profiler::CallTree}** aggregates allocation call paths to identify leak sources.
+- {ruby Memory::Profiler::Capture} monitors allocations using Ruby's internal NEWOBJ/FREEOBJ events.
+- {ruby Memory::Profiler::CallTree} aggregates allocation call paths to identify leak sources.
 - **No heap enumeration** - uses O(1) counters updated automatically by the VM.
 
-## Usage
+## Basic Usage
 
-### Monitor Memory Growth
-
-Start by identifying which classes are accumulating objects:
+The simplest way to detect memory leaks is to run the automatic sampler:
 
 ~~~ ruby
 require 'memory/profiler'
 
-# Create a capture instance:
-capture = Memory::Profiler::Capture.new
+# Create a sampler that monitors all allocations:
+sampler = Memory::Profiler::Sampler.new(
+	# Call stack depth for analysis:
+	depth: 10,
 
-# Start tracking all object allocations:
-capture.start
+	# Enable detailed tracking after 10 increases:
+	increases_threshold: 10
+)
 
-# Run your application code...
-run_your_app
+sampler.start
 
-# Check live object counts for common classes:
-puts "Hashes: #{capture.count_for(Hash)}"
-puts "Arrays: #{capture.count_for(Array)}"
-puts "Strings: #{capture.count_for(String)}"
+# Run periodic sampling in a background thread:
+Thread.new do
+	sampler.run(interval: 60) do |sample|
+		puts "⚠️  #{sample.target} growing: #{sample.current_size} objects (#{sample.increases} increases)"
+		
+		# After 10 increases, detailed statistics are automatically available:
+		if sample.increases >= 10
+			statistics = sampler.statistics(sample.target)
+			puts "Top leak sources:"
+			statistics[:top_paths].each do |path_data|
+				puts "  #{path_data[:count]}x from: #{path_data[:path].first}"
+			end
+		end
+	end
+end
 
-capture.stop
+# Your application runs here...
+objects = []
+while true
+	# Simulate a memory leak:
+	objects << Hash.new
+	sleep 0.1
+end
 ~~~
 
-**What this tells you**: Which object types are growing over time. If Hash count keeps increasing across multiple samples, you likely have a Hash leak.
+**What happens:**
+1. Sampler automatically tracks every class that allocates objects.
+2. Every 60 seconds, checks if any class grew significantly (>1000 objects).
+3. Reports growth via the block you provide.
+4. After 10 sustained increases, automatically captures call paths.
+5. You can then query `statistics(klass)` to find leak sources.
 
-### Find the Leak Source
+## Manual Investigation
 
-Once you've identified a leaking class, use call path analysis to find WHERE allocations come from:
+If you already know which class is leaking, you can investigate immediately:
 
 ~~~ ruby
-# Create a sampler with call path analysis:
-sampler = Memory::Profiler::Sampler.new(depth: 10)
-
-# Track the leaking class with analysis:
-sampler.track_with_analysis(Hash)
+sampler = Memory::Profiler::Sampler.new(depth: 15)
 sampler.start
+
+# Enable detailed tracking for specific class:
+sampler.track_with_analysis(Hash)
 
 # Run code that triggers the leak:
-simulate_leak
+1000.times { process_request }
 
-# Analyze where allocations come from:
+# Analyze:
 statistics = sampler.statistics(Hash)
 
-puts "Live objects: #{statistics[:live_count]}"
+puts "Live Hashes: #{statistics[:live_count]}"
 puts "\nTop allocation sources:"
 statistics[:top_paths].first(5).each do |path_data|
-  puts "\n#{path_data[:count]} allocations from:"
-  path_data[:path].each { |frame| puts "  #{frame}" }
+	puts "\n#{path_data[:count]} allocations from:"
+	path_data[:path].each { |frame| puts "  #{frame}" }
 end
 
-sampler.stop
-~~~
-
-**What this shows**: The complete call stacks that led to Hash allocations. Look for unexpected paths or paths that appear repeatedly.
-
-## Real-World Example
-
-Let's say you notice your app's memory growing over time. Here's how to diagnose it:
-
-~~~ ruby
-require 'memory/profiler'
-
-# Setup monitoring:
-capture = Memory::Profiler::Capture.new
-capture.start
-
-# Take baseline measurement:
-GC.start  # Clean up old objects first
-baseline = {
-  hashes: capture.count_for(Hash),
-  arrays: capture.count_for(Array),
-  strings: capture.count_for(String)
-}
-
-# Run your application for a period:
-# In production: sample periodically (every 60 seconds)
-# In development: run through typical workflows
-sleep 60
-
-# Check what grew:
-current = {
-  hashes: capture.count_for(Hash),
-  arrays: capture.count_for(Array),
-  strings: capture.count_for(String)
-}
-
-# Report growth:
-current.each do |type, count|
-  growth = count - baseline[type]
-  if growth > 100
-    puts "⚠️  #{type} grew by #{growth} objects"
-  end
+puts "\nHotspot frames:"
+statistics[:hotspots].first(5).each do |location, count|
+	puts "  #{location}: #{count}"
 end
 
-capture.stop
+sampler.stop!
 ~~~
 
-If Hashes grew significantly, enable detailed tracking:
+## Understanding the Output
 
-~~~ ruby
-# Create detailed sampler:
-sampler = Memory::Profiler::Sampler.new(depth: 15)
-sampler.track_with_analysis(Hash)
-sampler.start
+**Sample data** (from growth detection):
+- `target`: The class showing growth
+- `current_size`: Current live object count
+- `increases`: Number of sustained growth events (>1000 objects each)
+- `threshold`: Minimum growth to trigger an increase
 
-# Run suspicious code path:
-process_user_requests(1000)
+**Statistics** (after detailed tracking enabled):
+- `live_count`: Current retained objects
+- `top_paths`: Complete call stacks ranked by allocation frequency
+- `hotspots`: Individual frames aggregated across all paths
 
-# Find the culprits:
-statistics = sampler.statistics(Hash)
-statistics[:top_paths].first(3).each_with_index do |path_data, i|
-  puts "\n#{i+1}. #{path_data[:count]} Hash allocations:"
-  path_data[:path].first(5).each { |frame| puts "     #{frame}" }
-end
+**Top paths** show WHERE objects are created:
+```
+50 allocations from:
+	app/services/processor.rb:45:in 'process_item'
+	app/workers/job.rb:23:in 'perform'
+```
 
-sampler.stop
-~~~
+**Hotspots** show which lines appear most across all paths:
+```
+app/services/processor.rb:45: 150    ← This line in many different call stacks
+```
 
-## Best Practices
+## Performance Considerations
 
-### When Tracking in Production
+**Automatic mode** (recommended for production):
+- Minimal overhead initially (just counting).
+- Detailed tracking only enabled when leaks detected.
+- 60-second sampling interval is non-intrusive.
 
-1. **Start tracking AFTER startup**: Call `GC.start` before `capture.start` to avoid counting initialization objects
-2. **Use count-only mode for monitoring**: `capture.track(Hash)` (no callback) has minimal overhead
-3. **Enable analysis only when investigating**: Call path analysis has higher overhead
-4. **Sample periodically**: Take measurements every 60 seconds rather than continuously
-5. **Stop when done**: Always call `stop()` to remove event hooks
-
-### Performance Considerations
-
-**Count-only tracking** (no callback):
-- Minimal overhead (~5-10% on allocation hotpath)
-- Safe for production monitoring
-- Tracks all classes automatically
-
-**Call path analysis** (with callback):
-- Higher overhead (captures `caller_locations` on every allocation)  
-- Use during investigation, not continuous monitoring
-- Only track specific classes you're investigating
-
-### Avoiding False Positives
-
-Objects allocated before tracking starts but freed after will show as negative or zero:
-
-~~~ ruby
-# ❌ Wrong - counts existing objects:
-capture.start
-100.times { {} }
-GC.start  # Frees old + new objects → underflow
-
-# ✅ Right - clean slate first:
-GC.start  # Clear old objects
-capture.start
-100.times { {} }
-~~~
-
-## Common Scenarios
-
-### Detecting Cache Leaks
-
-~~~ ruby
-# Monitor your cache class:
-capture = Memory::Profiler::Capture.new
-capture.start
-
-cache_baseline = capture.count_for(CacheEntry)
-
-# Run for a period:
-sleep 300  # 5 minutes
-
-cache_current = capture.count_for(CacheEntry)
-
-if cache_current > cache_baseline * 2
-  puts "⚠️  Cache is leaking! #{cache_current - cache_baseline} entries added"
-  # Enable detailed tracking to find the source
-end
-~~~
-
-### Finding Retention in Request Processing
-
-~~~ ruby
-# Track during request processing:
-sampler = Memory::Profiler::Sampler.new
-sampler.track_with_analysis(Hash)
-sampler.start
-
-# Process requests:
-1000.times do
-  process_request
-end
-
-# Check if Hashes are being retained:
-statistics = sampler.statistics(Hash)
-
-if statistics[:live_count] > 1000
-  puts "Leaking #{statistics[:live_count]} Hashes per 1000 requests!"
-  statistics[:top_paths].first(3).each do |path_data|
-    puts "\n#{path_data[:count]}x from:"
-    puts path_data[:path].join("\n  ")
-  end
-end
-
-sampler.stop
-~~~
+**Manual tracking** (for investigation):
+- Higher overhead (captures `caller_locations` on every allocation).
+- Use during debugging, not continuous monitoring.
+- Only track specific classes you're investigating.

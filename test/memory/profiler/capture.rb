@@ -200,7 +200,7 @@ describe Memory::Profiler::Capture do
 			# by storing state in callbacks and forcing GC
 			
 			# Pre-allocate state objects to avoid allocation during callback
-			state_objects = 200.times.map { {index: rand} }
+			state_objects = 200.times.map {{index: rand}}
 			state_index = 0
 			
 			capture.track(Hash) do |klass, event, state|
@@ -223,7 +223,7 @@ describe Memory::Profiler::Capture do
 			end
 			
 			# Mix old generation objects by running GC multiple times
-			3.times { GC.start }
+			3.times {GC.start}
 			
 			# Should not crash with "try to mark T_NONE object"
 			expect(capture.count_for(Hash)).to be >= 0
@@ -239,20 +239,20 @@ describe Memory::Profiler::Capture do
 			capture.start
 			
 			# Allocate some instances
-			3.times { anonymous_class.new }
+			3.times {anonymous_class.new}
 			
 			# Remove reference to the class
 			anonymous_class = nil
 			
 			# Force GC multiple times to mix old generation objects
 			# and increase chance the class gets collected
-			3.times { GC.start }
+			3.times {GC.start}
 			
 			# Allocate some other objects to trigger more marking
-			1000.times { [] }
+			1000.times {[]}
 			
 			# Force more GC to trigger marking of tracked_classes
-			3.times { GC.start }
+			3.times {GC.start}
 			
 			# Should not crash during GC marking
 			capture.stop
@@ -267,18 +267,18 @@ describe Memory::Profiler::Capture do
 			capture.start
 			
 			# Allocate many strings
-			1000.times { "test" }
+			1000.times {"test"}
 			
 			# Mix old generation objects
-			3.times { GC.start }
+			3.times {GC.start}
 			
 			# Now do array join which allocates strings and can trigger GC
 			# This matches the stack trace: /array.c:2915 rb_ary_join
-			large_array = 1000.times.map { "item_#{rand}" }
+			large_array = 1000.times.map {"item_#{rand}"}
 			result = large_array.join(",")
 			
 			# Mix old generation again
-			3.times { GC.start }
+			3.times {GC.start}
 			
 			# Should not crash with "try to mark T_NONE object"
 			expect(result).not.to be == nil
@@ -297,7 +297,7 @@ describe Memory::Profiler::Capture do
 			capture.start
 			
 			# Allocate many strings
-			strings = 1000.times.map { "test#{rand}" }
+			strings = 1000.times.map {"test#{rand}"}
 			
 			# Should not crash
 			expect(capture.count_for(String)).to be >= 1000

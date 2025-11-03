@@ -8,5 +8,9 @@ metadata:
 files:
 - path: getting-started.md
   title: Getting Started
-  description: This guide explains how to use `memory-profiler` to detect and diagnose
-    memory leaks in Ruby applications.
+  description: This guide explains how to use `memory-profiler` to automatically detect
+    and diagnose memory leaks in Ruby applications.
+- path: rack-integration.md
+  title: Rack Integration
+  description: This guide explains how to integrate `memory-profiler` into Rack applications
+    for automatic memory leak detection.
