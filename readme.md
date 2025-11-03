@@ -22,6 +22,12 @@ Please see the [project documentation](https://socketry.github.io/memory-profile
 
 Please see the [project releases](https://socketry.github.io/memory-profiler/releases/index) for all releases.
 
+### v1.1.6
+
+  - Write barriers all the things.
+  - Better state handling and object increment/decrement counting.
+  - Better call tree handling - including support for `prune!`.
+
 ### v1.1.5
 
   - Use queue for `newobj` too to avoid invoking user code during object allocation.

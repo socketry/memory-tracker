@@ -1,6 +1,6 @@
 # Releases
 
-## Unreleased
+## v1.1.6
 
   - Write barriers all the things.
   - Better state handling and object increment/decrement counting.
