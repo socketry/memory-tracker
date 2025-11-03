@@ -13,7 +13,7 @@
 
 enum {
 	DEBUG = 0,
-	DEBUG_FREED_QUEUE = 0,
+	DEBUG_EVENT_QUEUES = 0,
 	DEBUG_STATE = 0,
 };
 
@@ -235,7 +235,7 @@ static void Memory_Profiler_Capture_process_queues(void *arg) {
 	struct Memory_Profiler_Capture *capture;
 	TypedData_Get_Struct(self, struct Memory_Profiler_Capture, &Memory_Profiler_Capture_type, capture);
 	
-	if (DEBUG_FREED_QUEUE) fprintf(stderr, "Processing queues: %zu newobj, %zu freeobj\n", 
+	if (DEBUG_EVENT_QUEUES) fprintf(stderr, "Processing queues: %zu newobj, %zu freeobj\n", 
 		capture->newobj_queue.count, capture->freeobj_queue.count);
 	
 	// Disable tracking during queue processing to prevent infinite loop
@@ -308,7 +308,7 @@ static void Memory_Profiler_Capture_newobj_handler(VALUE self, struct Memory_Pro
 			// NOTE: realloc is safe during allocation (doesn't trigger Ruby allocation)
 			struct Memory_Profiler_Newobj_Queue_Item *newobj = Memory_Profiler_Queue_push(&capture->newobj_queue);
 			if (newobj) {
-				if (DEBUG_FREED_QUEUE) fprintf(stderr, "Queued newobj, queue size now: %zu/%zu\n", 
+				if (DEBUG_EVENT_QUEUES) fprintf(stderr, "Queued newobj, queue size now: %zu/%zu\n", 
 					capture->newobj_queue.count, capture->newobj_queue.capacity);
 				// Write directly to the allocated space
 				newobj->klass = klass;
@@ -316,10 +316,10 @@ static void Memory_Profiler_Capture_newobj_handler(VALUE self, struct Memory_Pro
 				newobj->object = object;
 				
 				// Trigger postponed job to process the queue
-				if (DEBUG_FREED_QUEUE) fprintf(stderr, "Triggering postponed job to process queues\n");
+				if (DEBUG_EVENT_QUEUES) fprintf(stderr, "Triggering postponed job to process queues\n");
 				rb_postponed_job_trigger(capture->postponed_job_handle);
 			} else {
-				if (DEBUG_FREED_QUEUE) fprintf(stderr, "Failed to queue newobj, out of memory\n");
+				if (DEBUG_EVENT_QUEUES) fprintf(stderr, "Failed to queue newobj, out of memory\n");
 			}
 			// If push failed (out of memory), silently drop this newobj event
 		}
@@ -366,7 +366,7 @@ static void Memory_Profiler_Capture_freeobj_handler(VALUE self, struct Memory_Pr
 				// NOTE: realloc is safe during GC (doesn't trigger Ruby allocation)
 				struct Memory_Profiler_Freeobj_Queue_Item *freed = Memory_Profiler_Queue_push(&capture->freeobj_queue);
 				if (freed) {
-					if (DEBUG_FREED_QUEUE) fprintf(stderr, "Queued freed object, queue size now: %zu/%zu\n", 
+					if (DEBUG_EVENT_QUEUES) fprintf(stderr, "Queued freed object, queue size now: %zu/%zu\n", 
 						capture->freeobj_queue.count, capture->freeobj_queue.capacity);
 					// Write directly to the allocated space
 					freed->klass = klass;
@@ -374,10 +374,10 @@ static void Memory_Profiler_Capture_freeobj_handler(VALUE self, struct Memory_Pr
 					freed->state = state;
 					
 					// Trigger postponed job to process both queues after GC
-					if (DEBUG_FREED_QUEUE) fprintf(stderr, "Triggering postponed job to process queues after GC\n");
+					if (DEBUG_EVENT_QUEUES) fprintf(stderr, "Triggering postponed job to process queues after GC\n");
 					rb_postponed_job_trigger(capture->postponed_job_handle);
 				} else {
-					if (DEBUG_FREED_QUEUE) fprintf(stderr, "Failed to queue freed object, out of memory\n");
+					if (DEBUG_EVENT_QUEUES) fprintf(stderr, "Failed to queue freed object, out of memory\n");
 				}
 				// If push failed (out of memory), silently drop this freeobj event
 			}
