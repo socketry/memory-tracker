@@ -102,28 +102,28 @@ module Memory
 				@call_trees = {}
 				@samples = {}
 			end
-
+			
 			# @attribute [Integer] The depth of the call tree.
 			attr :depth
 			
 			# @attribute [Proc] The filter to exclude frames from call paths.
 			attr :filter
-
+			
 			# @attribute [Integer] The number of increases before enabling detailed tracking.
 			attr :increases_threshold
-
+			
 			# @attribute [Integer] The number of insertions before auto-pruning (nil = no auto-pruning).
 			attr :prune_limit
-
+			
 			# @attribute [Integer | Nil] The number of insertions before auto-pruning (nil = no auto-pruning).
 			attr :prune_threshold
-
+			
 			# @attribute [Capture] The capture object.
 			attr :capture
-
+			
 			# @attribute [Hash] The call trees.
 			attr :call_trees
-
+			
 			# @attribute [Hash] The samples for each class being tracked.
 			attr :samples
 			
