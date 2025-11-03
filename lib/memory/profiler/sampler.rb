@@ -3,6 +3,8 @@
 # Released under the MIT License.
 # Copyright, 2025, by Samuel Williams.
 
+require "console"
+
 require_relative "capture"
 require_relative "call_tree"
 
@@ -90,10 +92,14 @@ module Memory
 			# @parameter depth [Integer] Number of stack frames to capture for call path analysis.
 			# @parameter filter [Proc] Optional filter to exclude frames from call paths.
 			# @parameter increases_threshold [Integer] Number of increases before enabling detailed tracking.
-			def initialize(depth: 10, filter: nil, increases_threshold: 10)
+			# @parameter prune_limit [Integer] Keep only top N children per node during pruning (default: 5).
+			# @parameter prune_threshold [Integer] Number of insertions before auto-pruning (nil = no auto-pruning).
+			def initialize(depth: 4, filter: nil, increases_threshold: 10, prune_limit: 5, prune_threshold: nil)
 				@depth = depth
 				@filter = filter || default_filter
 				@increases_threshold = increases_threshold
+				@prune_limit = prune_limit
+				@prune_threshold = prune_threshold
 				@capture = Capture.new
 				@call_trees = {}
 				@samples = {}
@@ -148,6 +154,9 @@ module Memory
 						yield sample if block_given?
 					end
 				end
+				
+				# Prune call trees to control memory usage
+				prune_call_trees!
 			end
 			
 			# Start tracking with call path analysis.
@@ -256,10 +265,36 @@ module Memory
 				@call_trees.clear
 			end
 			
-			private
+		private
 			
 			def default_filter
 				->(location) {!location.path.match?(%r{/(gems|ruby)/|\A\(eval\)})}
+			end
+			
+			def prune_call_trees!
+				return if @prune_threshold.nil?
+				
+				@call_trees.each do |klass, tree|
+					# Only prune if insertions exceed threshold:
+					insertions = tree.insertion_count
+					next if insertions < @prune_threshold
+					
+					# Prune the tree
+					pruned_count = tree.prune!(@prune_limit)
+					
+					# Reset insertion counter after pruning
+					tree.insertion_count = 0
+					
+					# Log pruning activity for visibility
+					if pruned_count > 0 && defined?(Console)
+						Console.debug(klass, "Pruned call tree:",
+							pruned_nodes: pruned_count,
+							insertions_since_last_prune: insertions,
+							total: tree.total_allocations,
+							retained: tree.retained_allocations
+						)
+					end
+				end
 			end
 		end
 	end

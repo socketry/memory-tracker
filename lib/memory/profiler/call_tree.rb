@@ -52,6 +52,63 @@ module Memory
 					end
 				end
 				
+				# Prune this node's children, keeping only the top N by retained count.
+				# Prunes current level first, then recursively prunes retained children (top-down).
+				#
+				# @parameter limit [Integer] Number of children to keep.
+				# @returns [Integer] Total number of nodes pruned (discarded).
+				def prune!(limit)
+					return 0 if @children.nil?
+					
+					pruned_count = 0
+					
+					# Prune at this level first - keep only top N children by retained count
+					if @children.size > limit
+						sorted = @children.sort_by do |_location, child|
+							-child.retained_count  # Sort descending
+						end
+						
+						# Detach and count discarded subtrees before we discard them:
+						discarded = sorted.drop(limit)
+						discarded.each do |_location, child|
+							# detach! breaks references to aid GC and returns node count
+							pruned_count += child.detach!
+						end
+						
+						@children = sorted.first(limit).to_h
+					end
+					
+					# Now recursively prune the retained children (avoid pruning nodes we just discarded)
+					@children.each_value {|child| pruned_count += child.prune!(limit)}
+					
+					# Clean up if we ended up with no children
+					@children = nil if @children.empty?
+					
+					pruned_count
+				end
+				
+				# Detach this node from the tree, breaking parent/child relationships.
+				# This helps GC collect pruned nodes that might be retained in object_states.
+				#
+				# Recursively detaches all descendants and returns total nodes detached.
+				#
+				# @returns [Integer] Number of nodes detached (including self).
+				def detach!
+					count = 1  # Self
+					
+					# Recursively detach all children first and sum their counts
+					if @children
+						@children.each_value {|child| count += child.detach!}
+					end
+					
+					# Break all references
+					@parent = nil
+					@children = nil
+					@location = nil
+					
+					return count
+				end
+				
 				# Check if this node is a leaf (end of a call path).
 				#
 				# @returns [Boolean] True if this node has no children.
@@ -95,7 +152,11 @@ module Memory
 			# Create a new call tree for tracking allocation paths.
 			def initialize
 				@root = Node.new
+				@insertion_count = 0
 			end
+			
+			# @attribute [Integer] Number of insertions (allocations) recorded in this tree.
+			attr_accessor :insertion_count
 			
 			# Record an allocation with the given caller locations.
 			#
@@ -114,6 +175,9 @@ module Memory
 				# Increment counts for entire path (from leaf back to root):
 				current.increment_path!
 				
+				# Track total insertions
+				@insertion_count += 1
+				
 				# Return leaf node for object tracking:
 				current
 			end
@@ -122,7 +186,7 @@ module Memory
 			#
 			# @parameter limit [Integer] Maximum number of paths to return.
 			# @parameter by [Symbol] Sort by :total or :retained count.
-			# @returns [Array<Array>] Array of [locations, total_count, retained_count].
+			# @returns [Array(Array)] Array of [locations, total_count, retained_count].
 			def top_paths(limit = 10, by: :retained)
 				paths = []
 				
@@ -169,6 +233,16 @@ module Memory
 			# Clear all tracking data
 			def clear!
 				@root = Node.new
+				@insertion_count = 0
+			end
+			
+			# Prune the tree to keep only the top N children at each level.
+			# This controls memory usage by removing low-retained branches.
+			#
+			# @parameter limit [Integer] Number of children to keep per node (default: 5).
+			# @returns [Integer] Total number of nodes pruned (discarded).
+			def prune!(limit = 5)
+				@root.prune!(limit)
 			end
 			
 		private
