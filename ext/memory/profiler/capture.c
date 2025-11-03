@@ -694,6 +694,57 @@ static VALUE Memory_Profiler_Capture_aref(VALUE self, VALUE klass) {
 	return Qnil;
 }
 
+// Struct to accumulate statistics during iteration
+struct Memory_Profiler_Allocations_Statistics {
+	size_t total_tracked_objects;
+	VALUE per_class_counts;
+};
+
+// Iterator callback to count object_states per class
+static int Memory_Profiler_Capture_count_object_states(st_data_t key, st_data_t value, st_data_t argument) {
+	struct Memory_Profiler_Allocations_Statistics *statistics = (struct Memory_Profiler_Allocations_Statistics *)argument;
+	VALUE klass = (VALUE)key;
+	VALUE allocations = (VALUE)value;
+	struct Memory_Profiler_Capture_Allocations *record = Memory_Profiler_Allocations_get(allocations);
+	
+	size_t object_states_count = record->object_states ? record->object_states->num_entries : 0;
+	statistics->total_tracked_objects += object_states_count;
+	
+	rb_hash_aset(statistics->per_class_counts, klass, SIZET2NUM(object_states_count));
+	return ST_CONTINUE;
+}
+
+// Get internal statistics for debugging
+// Returns hash with internal state sizes
+static VALUE Memory_Profiler_Capture_statistics(VALUE self) {
+	struct Memory_Profiler_Capture *capture;
+	TypedData_Get_Struct(self, struct Memory_Profiler_Capture, &Memory_Profiler_Capture_type, capture);
+	
+	VALUE statistics = rb_hash_new();
+	
+	// Tracked classes count
+	rb_hash_aset(statistics, ID2SYM(rb_intern("tracked_classes_count")), SIZET2NUM(capture->tracked_classes->num_entries));
+	
+	// Queue sizes
+	rb_hash_aset(statistics, ID2SYM(rb_intern("newobj_queue_size")), SIZET2NUM(capture->newobj_queue.count));
+	rb_hash_aset(statistics, ID2SYM(rb_intern("newobj_queue_capacity")), SIZET2NUM(capture->newobj_queue.capacity));
+	rb_hash_aset(statistics, ID2SYM(rb_intern("freeobj_queue_size")), SIZET2NUM(capture->freeobj_queue.count));
+	rb_hash_aset(statistics, ID2SYM(rb_intern("freeobj_queue_capacity")), SIZET2NUM(capture->freeobj_queue.capacity));
+	
+	// Count object_states entries for each tracked class
+	struct Memory_Profiler_Allocations_Statistics allocations_statistics = {
+		.total_tracked_objects = 0,
+		.per_class_counts = rb_hash_new()
+	};
+	
+	st_foreach(capture->tracked_classes, Memory_Profiler_Capture_count_object_states, (st_data_t)&allocations_statistics);
+	
+	rb_hash_aset(statistics, ID2SYM(rb_intern("total_tracked_objects")), SIZET2NUM(allocations_statistics.total_tracked_objects));
+	rb_hash_aset(statistics, ID2SYM(rb_intern("tracked_objects_per_class")), allocations_statistics.per_class_counts);
+	
+	return statistics;
+}
+
 void Init_Memory_Profiler_Capture(VALUE Memory_Profiler)
 {
 	// Initialize event symbols
@@ -715,6 +766,7 @@ void Init_Memory_Profiler_Capture(VALUE Memory_Profiler)
 	rb_define_method(Memory_Profiler_Capture, "each", Memory_Profiler_Capture_each, 0);
 	rb_define_method(Memory_Profiler_Capture, "[]", Memory_Profiler_Capture_aref, 1);
 	rb_define_method(Memory_Profiler_Capture, "clear", Memory_Profiler_Capture_clear, 0);
+	rb_define_method(Memory_Profiler_Capture, "statistics", Memory_Profiler_Capture_statistics, 0);
 	
 	// Initialize Allocations class
 	Init_Memory_Profiler_Allocations(Memory_Profiler);

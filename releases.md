@@ -1,5 +1,9 @@
 # Releases
 
+## Unreleased
+
+  - Expose `Capture#statistics` for debugging internal memory tracking state.
+
 ## v1.1.6
 
   - Write barriers all the things.
