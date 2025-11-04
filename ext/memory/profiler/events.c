@@ -14,6 +14,9 @@ enum {
 
 // Internal structure for the global event queue system.
 struct Memory_Profiler_Events {
+	// The VALUE wrapper for this struct (needed for write barriers).
+	VALUE self;
+	
 	// Global event queue (contains events from all Capture instances).
 	struct Memory_Profiler_Queue queue;
 	
@@ -43,7 +46,10 @@ static const rb_data_type_t Memory_Profiler_Events_type = {
 // Create and initialize the global event queue system.
 static VALUE Memory_Profiler_Events_new(void) {
 	struct Memory_Profiler_Events *events;
-	VALUE obj = TypedData_Make_Struct(rb_cObject, struct Memory_Profiler_Events, &Memory_Profiler_Events_type, events);
+	VALUE self = TypedData_Make_Struct(rb_cObject, struct Memory_Profiler_Events, &Memory_Profiler_Events_type, events);
+	
+	// Store the VALUE wrapper for write barriers:
+	events->self = self;
 	
 	// Initialize the global event queue:
 	Memory_Profiler_Queue_initialize(&events->queue, sizeof(struct Memory_Profiler_Event));
@@ -60,7 +66,7 @@ static VALUE Memory_Profiler_Events_new(void) {
 		rb_raise(rb_eRuntimeError, "Failed to register postponed job!");
 	}
 	
-	return obj;
+	return self;
 }
 
 // Get the global events instance (internal helper).
@@ -149,10 +155,12 @@ int Memory_Profiler_Events_enqueue(
 	struct Memory_Profiler_Event *event = Memory_Profiler_Queue_push(&events->queue);
 	if (event) {
 		event->type = type;
-		event->capture = capture;
-		event->klass = klass;
-		event->allocations = allocations;
-		event->object = object;
+		
+		// Use write barriers when storing VALUEs (required for RUBY_TYPED_WB_PROTECTED):
+		RB_OBJ_WRITE(events->self, &event->capture, capture);
+		RB_OBJ_WRITE(events->self, &event->klass, klass);
+		RB_OBJ_WRITE(events->self, &event->allocations, allocations);
+		RB_OBJ_WRITE(events->self, &event->object, object);
 		
 		const char *type_name = (type == MEMORY_PROFILER_EVENT_TYPE_NEWOBJ) ? "NEWOBJ" : "FREEOBJ";
 		if (DEBUG) fprintf(stderr, "Queued %s to global queue, size: %zu\n", type_name, events->queue.count);

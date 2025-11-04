@@ -1,5 +1,9 @@
 # Releases
 
+## Unreleased
+
+  - More write barriers...
+
 ## v1.1.8
 
   - Use single global queue for event handling to avoid incorrect ordering.
