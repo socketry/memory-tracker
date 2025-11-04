@@ -1,6 +1,6 @@
 # Releases
 
-## Unreleased
+## v1.1.9
 
   - More write barriers...
 

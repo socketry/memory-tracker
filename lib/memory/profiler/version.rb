@@ -7,7 +7,7 @@
 module Memory
 	# @namespace
 	module Profiler
-		VERSION = "1.1.8"
+		VERSION = "1.1.9"
 	end
 end
 

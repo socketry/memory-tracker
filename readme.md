@@ -22,6 +22,10 @@ Please see the [project documentation](https://socketry.github.io/memory-profile
 
 Please see the [project releases](https://socketry.github.io/memory-profiler/releases/index) for all releases.
 
+### v1.1.9
+
+  - More write barriers...
+
 ### v1.1.8
 
   - Use single global queue for event handling to avoid incorrect ordering.
