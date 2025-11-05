@@ -146,15 +146,15 @@ module Memory
 			# @parameter interval [Numeric] Seconds between samples.
 			# @yields {|sample| ...} Called when a class shows significant growth.
 			def run(interval: 60, &block)
-				start_time = Process.clock_gettime(Process::CLOCK_MONOTONIC)
-				
 				while true
+					start_time = Process.clock_gettime(Process::CLOCK_MONOTONIC)
+					
 					sample!(&block)
 					
+					# Sleep for the remainder of the interval:
 					now = Process.clock_gettime(Process::CLOCK_MONOTONIC)
 					delta = interval - (now - start_time)
 					sleep(delta) if delta > 0
-					start_time = now
 				end
 			end
 			

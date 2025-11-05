@@ -1,5 +1,9 @@
 # Releases
 
+## Unreleased
+
+  - Fix sampler loop interval handling.
+
 ## v1.1.12
 
   - Use `rb_obj_id` for tracking object states to avoid compaction issues.
