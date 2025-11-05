@@ -1,5 +1,9 @@
 # Releases
 
+## Unreleased
+
+  - Ignore `freeobj` events for objects with anonymous classes that are not tracked (and thus become `T_NONE`).
+
 ## v1.1.13
 
   - Fix sampler loop interval handling.

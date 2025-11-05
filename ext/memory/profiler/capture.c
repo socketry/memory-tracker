@@ -138,9 +138,9 @@ const char *event_flag_name(rb_event_flag_t event_flag) {
 }
 
 // Process a NEWOBJ event. All allocation tracking logic is here.
-static void Memory_Profiler_Capture_process_newobj(VALUE capture_value, VALUE klass, VALUE object) {
+static void Memory_Profiler_Capture_process_newobj(VALUE self, VALUE klass, VALUE object) {
 	struct Memory_Profiler_Capture *capture;
-	TypedData_Get_Struct(capture_value, struct Memory_Profiler_Capture, &Memory_Profiler_Capture_type, capture);
+	TypedData_Get_Struct(self, struct Memory_Profiler_Capture, &Memory_Profiler_Capture_type, capture);
 	
 	// Pause the capture to prevent infinite loop:
 	capture->paused += 1;
@@ -168,8 +168,8 @@ static void Memory_Profiler_Capture_process_newobj(VALUE capture_value, VALUE kl
 		
 		allocations = Memory_Profiler_Allocations_wrap(record);
 		st_insert(capture->tracked_classes, (st_data_t)klass, (st_data_t)allocations);
-		RB_OBJ_WRITTEN(capture_value, Qnil, klass);
-		RB_OBJ_WRITTEN(capture_value, Qnil, allocations);
+		RB_OBJ_WRITTEN(self, Qnil, klass);
+		RB_OBJ_WRITTEN(self, Qnil, allocations);
 	}
 	
 	// Only store state if there's a callback
@@ -298,6 +298,29 @@ static void Memory_Profiler_Capture_event_callback(VALUE data, void *ptr) {
 	VALUE klass = rb_class_of(object);
 	if (!klass) return;
 	
+	// Check if class is already freed (T_NONE). This can happen when:
+	// 1. Object was allocated before capture started (no NEWOBJ event queued).
+	// 2. Anonymous class (Class.new) was freed before its instances.
+	//
+	// If the class is T_NONE, it means:
+	// - It's NOT in tracked_classes (would retain it via GC mark callback).
+	// - It's NOT in any pending NEWOBJ event (would retain it via event queue marking).
+	//
+	// Therefore process_freeobj() would skip this event anyway (class lookup fails at line 200).
+	// We must skip enqueueing to avoid attempting to mark a T_NONE object during GC,
+	// which can cause: [BUG] try to mark T_NONE object.
+	if (rb_type(klass) == T_NONE) {
+		return;
+	}
+	
+	if (DEBUG) {
+		const char *klass_name = "(ignored)";
+		if (event_flag == RUBY_INTERNAL_EVENT_NEWOBJ) {
+			klass_name = rb_class2name(klass);
+		}
+		fprintf(stderr, "Memory_Profiler_Capture_event_callback: object=%p, event_flag=%s, klass=%s\n", (void*)object, event_flag_name(event_flag), klass_name);
+	}
+
 	if (event_flag == RUBY_INTERNAL_EVENT_NEWOBJ) {
 		// Skip NEWOBJ if disabled (during callback) to prevent infinite recursion
 		if (capture->paused) return;
@@ -417,7 +440,7 @@ static VALUE Memory_Profiler_Capture_track(int argc, VALUE *argv, VALUE self) {
 		RB_OBJ_WRITE(self, &record->callback, callback);
 	} else {
 		struct Memory_Profiler_Capture_Allocations *record = ALLOC(struct Memory_Profiler_Capture_Allocations);
-		record->callback = callback;  // Initial assignment, no write barrier needed
+		RB_OBJ_WRITE(self, &record->callback, callback);
 		record->new_count = 0;
 		record->free_count = 0;
 		record->states = st_init_numtable();
@@ -426,14 +449,8 @@ static VALUE Memory_Profiler_Capture_track(int argc, VALUE *argv, VALUE self) {
 		allocations = Memory_Profiler_Allocations_wrap(record);
 		
 		st_insert(capture->tracked_classes, (st_data_t)klass, (st_data_t)allocations);
-		// Notify GC about the class VALUE stored as key in the table
 		RB_OBJ_WRITTEN(self, Qnil, klass);
-		// Notify GC about the allocations VALUE stored as value in the table
 		RB_OBJ_WRITTEN(self, Qnil, allocations);
-		// Now inform GC about the callback reference
-		if (!NIL_P(callback)) {
-			RB_OBJ_WRITTEN(self, Qnil, callback);
-		}
 	}
 	
 	return allocations;

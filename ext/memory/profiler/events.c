@@ -31,6 +31,7 @@ static void Memory_Profiler_Events_mark(void *ptr);
 static void Memory_Profiler_Events_compact(void *ptr);
 static void Memory_Profiler_Events_free(void *ptr);
 static size_t Memory_Profiler_Events_memsize(const void *ptr);
+static const char *Memory_Profiler_Event_Type_name(enum Memory_Profiler_Event_Type type);
 
 // TypedData definition for Events.
 static const rb_data_type_t Memory_Profiler_Events_type = {
@@ -102,15 +103,9 @@ static void Memory_Profiler_Events_mark_queue(struct Memory_Profiler_Queue *queu
 		// Skip already-processed events if requested:
 		if (skip_none && event->type == MEMORY_PROFILER_EVENT_TYPE_NONE) continue;
 		
-		// Mark the Capture instance and class:
 		rb_gc_mark_movable(event->capture);
 		rb_gc_mark_movable(event->klass);
-		
-		// For NEWOBJ: mark the object to keep it alive until processor runs
-		// For FREEOBJ: DON'T mark (object is being freed)
-		if (event->type == MEMORY_PROFILER_EVENT_TYPE_NEWOBJ) {
-			rb_gc_mark_movable(event->object);
-		}
+		rb_gc_mark_movable(event->object);
 	}
 }
 
@@ -133,7 +128,6 @@ static void Memory_Profiler_Events_compact_queue(struct Memory_Profiler_Queue *q
 		// Skip already-processed events if requested:
 		if (skip_none && event->type == MEMORY_PROFILER_EVENT_TYPE_NONE) continue;
 		
-		// Update all VALUEs if they moved during compaction:
 		event->capture = rb_gc_location(event->capture);
 		event->klass = rb_gc_location(event->klass);
 		event->object = rb_gc_location(event->object);
