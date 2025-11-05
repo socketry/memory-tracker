@@ -4,6 +4,7 @@
 # Copyright, 2025, by Samuel Williams.
 
 require "console"
+require "objspace"
 
 require_relative "capture"
 require_relative "call_tree"
@@ -150,6 +151,9 @@ module Memory
 					start_time = Process.clock_gettime(Process::CLOCK_MONOTONIC)
 					
 					sample!(&block)
+					
+					# Log capture statistics to detect issues like missing FREEOBJ events:
+					Console.info(self, "Capture statistics:", statistics: @capture.statistics, object_space: ::ObjectSpace.count_objects)
 					
 					# Sleep for the remainder of the interval:
 					now = Process.clock_gettime(Process::CLOCK_MONOTONIC)

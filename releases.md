@@ -3,6 +3,7 @@
 ## Unreleased
 
   - Fix sampler loop interval handling.
+  - Log capture statistics from sampler run loop.
 
 ## v1.1.12
 
