@@ -1,6 +1,6 @@
 # Releases
 
-## Unreleased
+## v1.1.14
 
   - Ignore `freeobj` events for objects with anonymous classes that are not tracked (and thus become `T_NONE`).
 
