@@ -302,10 +302,18 @@ static void Memory_Profiler_Capture_event_callback(VALUE data, void *ptr) {
 		// Skip NEWOBJ if disabled (during callback) to prevent infinite recursion
 		if (capture->paused) return;
 		
+		// It's safe to unconditionally call here:
+		object = rb_obj_id(object);
+
 		Memory_Profiler_Events_enqueue(MEMORY_PROFILER_EVENT_TYPE_NEWOBJ, data, klass, object);
 	} else if (event_flag == RUBY_INTERNAL_EVENT_FREEOBJ) {
-		// Always process FREEOBJ to ensure state cleanup
-		Memory_Profiler_Events_enqueue(MEMORY_PROFILER_EVENT_TYPE_FREEOBJ, data, klass, object);
+		// We only care about objects that have been seen before (i.e. have an object ID):
+		if (RB_FL_TEST(object, FL_SEEN_OBJ_ID)) {
+			// It's only safe to call here if the object already has an object ID.
+			object = rb_obj_id(object);
+			
+			Memory_Profiler_Events_enqueue(MEMORY_PROFILER_EVENT_TYPE_FREEOBJ, data, klass, object);
+		}
 	}
 }
 

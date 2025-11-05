@@ -136,12 +136,7 @@ static void Memory_Profiler_Events_compact_queue(struct Memory_Profiler_Queue *q
 		// Update all VALUEs if they moved during compaction:
 		event->capture = rb_gc_location(event->capture);
 		event->klass = rb_gc_location(event->klass);
-		
-		// For NEWOBJ: update object pointer if it moved
-		// For FREEOBJ: DON'T update (object is being freed, pointer is stale)
-		if (event->type == MEMORY_PROFILER_EVENT_TYPE_NEWOBJ) {
-			event->object = rb_gc_location(event->object);
-		}
+		event->object = rb_gc_location(event->object);
 	}
 }
 

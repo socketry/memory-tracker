@@ -12,8 +12,9 @@ static VALUE Memory_Profiler_Allocations = Qnil;
 
 // Helper to mark states table (object => state)
 static int Memory_Profiler_Allocations_states_mark(st_data_t key, st_data_t value, st_data_t arg) {
-	// Don't mark the object key (weak reference - don't keep objects alive)
-	// Mark the state value
+	// We don't want the key to move - we can't rehash the table if it does.
+	rb_gc_mark((VALUE)key);
+	
 	VALUE state = (VALUE)value;
 	rb_gc_mark_movable(state);
 	return ST_CONTINUE;
@@ -27,19 +28,7 @@ static int Memory_Profiler_Allocations_states_foreach(st_data_t key, st_data_t v
 
 // Replace callback for st_foreach_with_replace to update states during compaction
 static int Memory_Profiler_Allocations_states_compact(st_data_t *key, st_data_t *value, st_data_t data, int existing) {
-	// Key is object (VALUE) - we can't update if it moved (would require rehashing/allocation)
-	VALUE old_state = (VALUE)*value;
-	VALUE new_state = rb_gc_location(old_state);
-	
-	// NOTE: We can't update object keys if they moved (would require rehashing/allocation).
-	// This means lookups may fail after compaction for moved objects.
-	// This is acceptable - FREEOBJ will simply not find the state and skip the callback.
-	// The state will be cleaned up when Allocations is freed/cleared.
-	
-	// Update state value if it moved (this is safe, doesn't rehash)
-	if (old_state != new_state) {
-		*value = (st_data_t)new_state;
-	}
+	*value = (st_data_t)rb_gc_location((VALUE)*value);
 	
 	return ST_CONTINUE;
 }

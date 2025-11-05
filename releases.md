@@ -1,5 +1,9 @@
 # Releases
 
+## Unreleased
+
+  - Use `rb_obj_id` for tracking object states to avoid compaction issues.
+
 ## v1.1.11
 
   - Double buffer shared events queues to fix queue corruption.
