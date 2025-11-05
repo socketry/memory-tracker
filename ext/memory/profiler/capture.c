@@ -298,21 +298,6 @@ static void Memory_Profiler_Capture_event_callback(VALUE data, void *ptr) {
 	VALUE klass = rb_class_of(object);
 	if (!klass) return;
 	
-	// Check if class is already freed (T_NONE). This can happen when:
-	// 1. Object was allocated before capture started (no NEWOBJ event queued).
-	// 2. Anonymous class (Class.new) was freed before its instances.
-	//
-	// If the class is T_NONE, it means:
-	// - It's NOT in tracked_classes (would retain it via GC mark callback).
-	// - It's NOT in any pending NEWOBJ event (would retain it via event queue marking).
-	//
-	// Therefore process_freeobj() would skip this event anyway (class lookup fails at line 200).
-	// We must skip enqueueing to avoid attempting to mark a T_NONE object during GC,
-	// which can cause: [BUG] try to mark T_NONE object.
-	if (rb_type(klass) == T_NONE) {
-		return;
-	}
-	
 	if (DEBUG) {
 		const char *klass_name = "(ignored)";
 		if (event_flag == RUBY_INTERNAL_EVENT_NEWOBJ) {
@@ -325,6 +310,7 @@ static void Memory_Profiler_Capture_event_callback(VALUE data, void *ptr) {
 		// Skip NEWOBJ if disabled (during callback) to prevent infinite recursion
 		if (capture->paused) return;
 		
+		// Check if class is already freed (T_NONE). This can happen when:
 		// It's safe to unconditionally call here:
 		object = rb_obj_id(object);
 
@@ -332,6 +318,10 @@ static void Memory_Profiler_Capture_event_callback(VALUE data, void *ptr) {
 	} else if (event_flag == RUBY_INTERNAL_EVENT_FREEOBJ) {
 		// We only care about objects that have been seen before (i.e. have an object ID):
 		if (RB_FL_TEST(object, FL_SEEN_OBJ_ID)) {
+			// For freeobj, we only care about klasses that we are tracking.
+			// This prevents us from enqueuing klass objects that might be freed.
+			if (!st_lookup(capture->tracked_classes, (st_data_t)klass, NULL)) return;
+			
 			// It's only safe to call here if the object already has an object ID.
 			object = rb_obj_id(object);
 			

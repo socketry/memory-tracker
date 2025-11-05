@@ -1,5 +1,9 @@
 # Releases
 
+## Unreleased
+
+  - Ignore `freeobj` for classes that are not being tracked.
+
 ## v1.1.14
 
   - Ignore `freeobj` events for objects with anonymous classes that are not tracked (and thus become `T_NONE`).
