@@ -1,6 +1,6 @@
 # Releases
 
-## Unreleased
+## v1.1.12
 
   - Use `rb_obj_id` for tracking object states to avoid compaction issues.
 
