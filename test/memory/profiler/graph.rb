@@ -42,7 +42,7 @@ describe Memory::Profiler::Graph do
 			roots = graph.roots
 			
 			expect(roots.first).to have_keys(
-				name: be(:end_with?, "LeakyObject@children"),
+				name: be(:end_with?, "LeakyObject.@children"),
 				count: be == 100,
 				percentage: be == 100.0,
 			)
@@ -220,6 +220,135 @@ describe Memory::Profiler::Graph do
 		end
 	end
 	
+	with "#name_for" do
+		it "generates simple path for single parent" do
+			root = {child: nil}
+			child = {data: "test"}
+			root[:child] = child
+			
+			graph.add(child)
+			graph.update!(root)
+			
+			name = graph.name_for(child)
+			
+			expect(name).to be == "Hash[:child]"
+		end
+		
+		it "generates names for multiple parents with pipe separator" do
+			# Create diamond: root1 -> child, root2 -> child
+			root1 = {path1: nil}
+			root2 = {path2: nil}
+			child = {shared: true}
+			
+			root1[:path1] = child
+			root2[:path2] = child
+			root = [root1, root2]
+			
+			graph.add(child)
+			graph.update!(root)
+			
+			name = graph.name_for(child)
+			
+			# Should contain both paths separated by |
+			expect(name).to be == "[Array[0][:path1]|Array[1][:path2]]"
+		end
+		
+		it "generates names for deeply nested structures" do
+			# Create: root -> @level1 -> [0] -> @level2 -> [0] -> child
+			root = Array.new
+			level1 = [Array.new]
+			level2 = [{nested: true}]
+			child = "deep value"
+			
+			root << level1
+			level1[0] << level2
+			level2[0][:child] = child
+			
+			graph.add(child)
+			graph.update!(root)
+			
+			name = graph.name_for(child)
+			
+			# Should show the path but might be very long
+			expect(name).to be == "Array[0][0][0][0][:child]"
+		end
+		
+		it "handles array index labels" do
+			root = []
+			items = 3.times.map{{index: _1}}
+			items.each{|item| root << item}
+			
+			graph.add(items[1])  # Add middle item
+			graph.update!(root)
+			
+			name = graph.name_for(items[1])
+			puts "Array index name: #{name}"
+			
+			expect(name).to be =~ /\[1\]/  # Should show index
+		end
+		
+		it "handles hash key labels" do
+			root = {users: nil, posts: nil}
+			users = {count: 100}
+			posts = {count: 50}
+			
+			root[:users] = users
+			root[:posts] = posts
+			
+			graph.add(users)
+			graph.update!(root)
+			
+			name = graph.name_for(users)
+			puts "Hash key name: #{name}"
+			
+			expect(name).to be =~ /\[:users\]/
+		end
+		
+		it "limits very long paths" do
+			# Create extremely deep nesting
+			root = []
+			current = root
+			
+			20.times do
+				inner = []
+				current << inner
+				current = inner
+			end
+			
+			graph.add(current)
+			graph.update!(root)
+			
+			name = graph.name_for(current)
+			puts "Very deep path (#{name.length} chars): #{name}"
+			
+			# Name should exist but hopefully not be thousands of characters
+			expect(name).to be_a(String)
+		end
+		
+		it "handles objects with multiple parent paths of different lengths" do
+			# Create: 
+			#   short_path -> child
+			#   long_path -> middle1 -> middle2 -> middle3 -> child
+			short_path = {direct: nil}
+			long_path = {level1: {level2: {level3: {final: nil}}}}
+			child = {shared: true}
+			
+			short_path[:direct] = child
+			long_path[:level1][:level2][:level3][:final] = child
+			
+			root = [short_path, long_path]
+			
+			graph.add(child)
+			graph.update!(root)
+			
+			name = graph.name_for(child)
+			puts name
+			
+			# Should show both paths with |
+			expect(name).to be =~ /\|/
+		end
+	end
+	
 	with "edge cases" do
 		it "handles empty object set" do
 			graph.update!(Object)
@@ -262,18 +391,16 @@ describe Memory::Profiler::Graph do
 			root = {data: []}
 			
 			50.times do |i|
-				obj = {value: i}
-				root[:data] << obj
-				graph.add(obj)
+				object = {value: i}
+				root[:data] << object
+				graph.add(object)
 			end
 			
 			graph.update!(root)
 			
-			# idom: the @data array is the immediate dominator (most specific!)
 			roots = graph.roots
 			expect(roots.first[:count]).to be == 50
-			# With lazy name generation, we see the hash key!
-			expect(roots.first[:name]).to be =~ /\[:data\]/  # Shows Hash[:data], not just Array
+			expect(roots.first[:name]).to be == "Hash[:data]"
 		end
 		
 		it "handles orphan objects correctly" do

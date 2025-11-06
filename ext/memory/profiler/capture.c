@@ -267,8 +267,7 @@ static void Memory_Profiler_Capture_process_newobj(VALUE self, VALUE klass, VALU
 	RB_OBJ_WRITTEN(self, Qnil, klass);
 	RB_OBJ_WRITTEN(self, Qnil, data);
 	RB_OBJ_WRITTEN(self, Qnil, allocations);
-
-done:
+	
 	// Resume the capture:
 	capture->paused -= 1;
 }
@@ -311,7 +310,7 @@ static void Memory_Profiler_Capture_process_freeobj(VALUE capture_value, VALUE k
 	
 	// Free the state struct
 	xfree(state);
-
+	
 done:
 	// Resume the capture:
 	capture->paused -= 1;

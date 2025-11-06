@@ -275,31 +275,31 @@ module Memory
 					result[:allocation_roots] = call_tree_data.as_json
 				end
 				
-			if retained_roots && allocations
-				result[:retained_roots] = compute_roots(klass)
+				if retained_roots
+					result[:retained_roots] = compute_roots(klass)
+				end
+				
+				result
 			end
 			
-			result
-		end
-		
-	private
-		
-		# Compute retaining roots for a class's allocations
-		def compute_roots(klass)
-			graph = Graph.new
+		private
 			
-			# Add all tracked objects to the graph
-			# NOTE: States table is now at Capture level, so we use capture.each_object
-			@capture.each_object(klass) do |object, state|
-				graph.add(object)
+			# Compute retaining roots for a class's allocations
+			def compute_roots(klass)
+				graph = Graph.new
+				
+				# Add all tracked objects to the graph
+				# NOTE: States table is now at Capture level, so we use capture.each_object
+				@capture.each_object(klass) do |object, state|
+					graph.add(object)
+				end
+				
+				# Build parent relationships
+				graph.update!
+				
+				# Return roots analysis
+				graph.roots
 			end
-			
-			# Build parent relationships
-			graph.update!
-			
-			# Return roots analysis
-			graph.roots
-		end
 			
 		public
 			
