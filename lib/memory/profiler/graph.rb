@@ -13,6 +13,7 @@ module Memory
 				@objects = Set.new.compare_by_identity
 				@parents = Hash.new.compare_by_identity
 				@names = Hash.new.compare_by_identity
+				@root = nil  # Track the root of traversal for idom
 			end
 			
 			def include?(object)
@@ -28,6 +29,9 @@ module Memory
 			end
 			
 			def update!(from = Object)
+				# Store the root for idom algorithm
+				@root = from
+				
 				# If the user has provided a specific object, try to avoid traversing the root Object.
 				if from != Object
 					@parents.clear
@@ -38,80 +42,68 @@ module Memory
 				traverse!(from)
 			end
 			
-			def roots
-				counts = Hash.new(0).compare_by_identity
-				
-				@objects.each do |object|
-					seen = Set.new.compare_by_identity
-					while object = @parents[object]
-						break if seen.include?(object)
-						counts[object] += 1
-						seen.add(object)
-					end
-				end
-				
-				counts.sort_by{|_, count| -count}.map do |object, count|
-					{
-						name: name_for(object),
-							count: count,
-							percentage: count.to_f / @objects.size * 100
-					}
-				end
-			end
+		# Find retaining roots using immediate dominator algorithm
+		# Returns array of hashes with :name, :count, :percentage
+		# C implementation in ext/memory/profiler/graph.c
+		# def roots
+		# 	roots_with_idom
+		# end
 			
-			def name_for(object, seen = Set.new.compare_by_identity)
-				return "" if seen.include?(object)
-				seen.add(object)
-				
-				if object.is_a?(Module)
-					object.name
-				elsif object.is_a?(Object)
-					name = @names.fetch(object){object.class.name}
-					
-					if parent = @parents[object]
-						name_for(parent, seen) + name.to_s
-					else
-						name.to_s
-					end
+		def name_for(object, seen = Set.new.compare_by_identity)
+			return "" if seen.include?(object)
+			seen.add(object)
+			
+			if object.is_a?(Module)
+				object.name
+			elsif object.is_a?(Object)
+				parents = @parents[object]
+
+				if parents&.any?
+					parents.map do |parent|
+						name_for(parent, seen) + compute_edge_label(parent, object)
+					end.join(" | ")
 				else
-					object.inspect
+					object.class.name
 				end
+			else
+				object.inspect
+			end
+		end
+			
+		private
+			# Limit the cost of computing the edge label.
+			SEARCH_LIMIT = 1000
+
+			# Lazily compute the edge label (how parent references child)
+			# This is called on-demand for objects that appear in roots
+			def compute_edge_label(parent, object)
+				case parent
+				when Hash
+					if parent.size < SEARCH_LIMIT
+						# Use Ruby's built-in key method to find the key
+						key = parent.key(object)
+						return key ? "[#{key.inspect}]" : object.class.name
+					else
+						return "[#{parent.size} keys]"
+					end
+				when Array
+					if parent.size < SEARCH_LIMIT
+						# Use Ruby's built-in index method to find the position
+						index = parent.index(object)
+						return index ? "[#{index}]" : object.class.name
+					else
+						return "[#{parent.size} elements]"
+					end
+				when Object
+					return @names[object]&.to_s || object.class.name
+				else
+					return "(unknown)"
+				end
+			rescue => error
+				# If inspection fails, fall back to class name
+				return "(#{error.class.name}: #{error.message})"
 			end
 			
-	private
-			
-			# Ruby implementation (commented out, replaced by traverse_c! in C extension)
-			# def traverse!(from, parent = nil)
-			# 	queue = [[from, parent]]
-			# 	
-			# 	while item = queue.shift
-			# 		current, parent = item
-			# 		
-			# 		# Store parent relationship:
-			# 		if @parents.include?(current)
-			# 			next # Already visited.
-			# 		elsif parent
-			# 			@parents[current] = parent
-			# 		end
-			# 		
-			# 		# Extract names:
-			# 		extract_names!(current)
-			# 		
-			# 		# Queue reachable objects
-			# 		ObjectSpace.reachable_objects_from(current).each do |object|
-			# 			# These will cause infinite recursion:
-			# 			next if object.is_a?(ObjectSpace::InternalObjectWrapper)
-			# 			
-			# 			# Already visited:
-			# 			next if @parents.key?(object)
-			# 			
-			# 			# Add to queue:
-			# 			queue << [object, current]
-			# 		end
-			# 	end
-			# end
-			
-			# Called from C traverse! implementation
 			def extract_names!(from)
 				if from.is_a?(Module)
 					from.constants.each do |constant|

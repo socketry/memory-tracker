@@ -93,30 +93,36 @@ describe Memory::Profiler::Graph do
 			graph.update!(root)
 			roots = graph.roots
 			
-			expect(roots.first).to have_keys(
-				count: be == 10,
-			)
+			# With circular references and multi-parent tracking,
+			# each object in the cycle has multiple parents
+			# The dominator should still account for all 10 objects
+			total = roots.sum { |r| r[:count] }
+			expect(total).to be == 10
 		end
 	end
 	
 	with "nested structures" do
-		it "handles deeply nested arrays" do
-			root = []
-			current = root
-			
-			10.times do
-				inner = []
-				current << inner
-				graph.add(inner)
-				current = inner
-			end
-			
-			graph.update!(root)
-			roots = graph.roots
-			
-			# Root array should be the top retainer
-			expect(roots.first[:count]).to be == 10
+	it "handles deeply nested arrays" do
+		root = []
+		current = root
+		
+		10.times do
+			inner = []
+			current << inner
+			graph.add(inner)
+			current = inner
 		end
+		
+		graph.update!(root)
+		roots = graph.roots
+		
+		# With idom, each array dominates only its immediate child
+		# So we get 10 different dominators, each dominating 1 object
+		expect(roots.size).to be == 10
+		roots.each do |root_info|
+			expect(root_info[:count]).to be == 1
+		end
+	end
 		
 		it "handles hash with many keys" do
 			root = {}
@@ -133,27 +139,30 @@ describe Memory::Profiler::Graph do
 			expect(roots.first[:count]).to be == 100
 		end
 		
-		it "handles mixed hash and array structures" do
-			root = {arrays: [], hashes: {}}
-			
-			50.times do |i|
-				arr = [i]
-				root[:arrays] << arr
-				graph.add(arr)
-			end
-			
-			50.times do |i|
-				h = {value: i}
-				root[:hashes]["key_#{i}"] = h
-				graph.add(h)
-			end
-			
-			graph.update!(root)
-			roots = graph.roots
-			
-			# Should find both retaining paths
-			expect(roots.first[:count]).to be == 100
+	it "handles mixed hash and array structures" do
+		root = {arrays: [], hashes: {}}
+		
+		50.times do |i|
+			arr = [i]
+			root[:arrays] << arr
+			graph.add(arr)
 		end
+		
+		50.times do |i|
+			h = {value: i}
+			root[:hashes]["key_#{i}"] = h
+			graph.add(h)
+		end
+		
+		graph.update!(root)
+		roots = graph.roots
+		
+		# With idom, each immediate container gets its own objects
+		# The arrays array dominates 50, the hashes hash dominates 50
+		expect(roots.size).to be >= 2
+		total_dominated = roots.sum { |r| r[:count] }
+		expect(total_dominated).to be == 100
+	end
 	end
 	
 	with "multiple roots" do
@@ -219,16 +228,17 @@ describe Memory::Profiler::Graph do
 			expect(roots).to be == []
 		end
 		
-		it "handles object with no parents" do
-			orphan = {orphan: true}
-			graph.add(orphan)
-			
-			graph.update!(orphan)
-			roots = graph.roots
-			
-			# Orphan should not have a parent
-			expect(roots).to be == []
-		end
+	it "handles object with no parents" do
+		orphan = {orphan: true}
+		graph.add(orphan)
+		
+		graph.update!(orphan)
+		roots = graph.roots
+		
+		# With idom, orphan is the root and dominates itself
+		expect(roots.size).to be == 1
+		expect(roots.first[:count]).to be == 1
+	end
 		
 		it "handles very large object counts" do
 			root = LeakyObject.new
@@ -243,6 +253,39 @@ describe Memory::Profiler::Graph do
 			roots = graph.roots
 			
 			expect(roots.first[:count]).to be == 1000
+		end
+	end
+	
+	with "immediate dominators" do
+		it "provides precise attribution showing immediate retainers" do
+			# Create: root -> @data -> [50 objects]
+			root = {data: []}
+			
+			50.times do |i|
+				obj = {value: i}
+				root[:data] << obj
+				graph.add(obj)
+			end
+			
+			graph.update!(root)
+			
+			# idom: the @data array is the immediate dominator (most specific!)
+			roots = graph.roots
+			expect(roots.first[:count]).to be == 50
+			# With lazy name generation, we see the hash key!
+			expect(roots.first[:name]).to be =~ /\[:data\]/  # Shows Hash[:data], not just Array
+		end
+		
+		it "handles orphan objects correctly" do
+			orphan = {orphan: true}
+			graph.add(orphan)
+			
+			graph.update!(orphan)
+			
+			# Orphan dominates itself
+			roots = graph.roots
+			expect(roots.size).to be == 1
+			expect(roots.first[:count]).to be == 1
 		end
 	end
 end
