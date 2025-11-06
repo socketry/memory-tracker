@@ -5,9 +5,8 @@
 #include "allocations.h"
 #include "events.h"
 
-#include "ruby.h"
-#include "ruby/debug.h"
-#include "ruby/st.h"
+#include <ruby/debug.h>
+#include <ruby/st.h>
 #include <stdatomic.h>
 #include <stdio.h>
 
@@ -16,9 +15,19 @@ enum {
 };
 
 static VALUE Memory_Profiler_Capture = Qnil;
+static VALUE rb_mObjectSpace = Qnil;
+static ID id_id2ref = Qnil;
 
 // Event symbols:
 static VALUE sym_newobj, sym_freeobj;
+
+// State state stored in the central states table.
+// Maps object_id => state information.
+struct Memory_Profiler_Capture_State {
+	VALUE klass;  // The class of the allocated object
+	VALUE data;  // User-defined state from callback
+	VALUE allocations;  // The Allocations wrapper for this class
+};
 
 // Main capture state (per-instance).
 struct Memory_Profiler_Capture {
@@ -29,15 +38,20 @@ struct Memory_Profiler_Capture {
 	int paused;
 
 	// Tracked classes: class => VALUE (wrapped Memory_Profiler_Capture_Allocations).
-	st_table *tracked_classes;
+	st_table *tracked;
+	
+	// Central states table: object_id (Integer) => struct Memory_Profiler_Capture_State*
+	// This is the single source of truth for which objects are being tracked.
+	// FREEOBJ can have class=NULL, so we can't use per-class states tables.
+	st_table *states;
 
 	// Total number of allocations and frees seen since tracking started.
 	size_t new_count;
 	size_t free_count;
 };
 
-// GC mark callback for tracked_classes table.
-static int Memory_Profiler_Capture_tracked_classes_mark(st_data_t key, st_data_t value, st_data_t arg) {
+// GC mark callback for tracked table.
+static int Memory_Profiler_Capture_tracked_mark(st_data_t key, st_data_t value, st_data_t arg) {
 	// Mark class as un-movable:
 	// - We don't want to re-index the table if the class moves.
 	// - We don't want objects in `freeobj` to have invalid class pointers (maybe helps).
@@ -51,19 +65,50 @@ static int Memory_Profiler_Capture_tracked_classes_mark(st_data_t key, st_data_t
 	return ST_CONTINUE;
 }
 
+// GC mark callback for states table.
+static int Memory_Profiler_Capture_states_mark(st_data_t key, st_data_t value, st_data_t arg) {
+	// Key is object_id (Integer VALUE) - mark it as un-movable
+	rb_gc_mark((VALUE)key);
+	
+	// Value is struct Memory_Profiler_Capture_State* - mark its VALUEs
+	struct Memory_Profiler_Capture_State *state = (struct Memory_Profiler_Capture_State *)value;
+	rb_gc_mark(state->klass);  // Mark class as un-movable
+	rb_gc_mark_movable(state->data);  // State can move
+	rb_gc_mark_movable(state->allocations);  // Allocations wrapper can move
+	
+	return ST_CONTINUE;
+}
+
 static void Memory_Profiler_Capture_mark(void *ptr) {
 	struct Memory_Profiler_Capture *capture = ptr;
 	
-	if (capture->tracked_classes) {
-		st_foreach(capture->tracked_classes, Memory_Profiler_Capture_tracked_classes_mark, 0);
+	if (capture->tracked) {
+		st_foreach(capture->tracked, Memory_Profiler_Capture_tracked_mark, 0);
 	}
+	
+	if (capture->states) {
+		st_foreach(capture->states, Memory_Profiler_Capture_states_mark, 0);
+	}
+}
+
+// Helper to free state states in the states table
+static int Memory_Profiler_Capture_states_free_callback(st_data_t key, st_data_t value, st_data_t arg) {
+	struct Memory_Profiler_Capture_State *state = (struct Memory_Profiler_Capture_State *)value;
+	xfree(state);
+	return ST_CONTINUE;
 }
 
 static void Memory_Profiler_Capture_free(void *ptr) {
 	struct Memory_Profiler_Capture *capture = ptr;
 		
-	if (capture->tracked_classes) {
-		st_free_table(capture->tracked_classes);
+	if (capture->tracked) {
+		st_free_table(capture->tracked);
+	}
+	
+	if (capture->states) {
+		// Free all states first
+		st_foreach(capture->states, Memory_Profiler_Capture_states_free_callback, 0);
+		st_free_table(capture->states);
 	}
 	
 	xfree(capture);
@@ -73,20 +118,20 @@ static size_t Memory_Profiler_Capture_memsize(const void *ptr) {
 	const struct Memory_Profiler_Capture *capture = ptr;
 	size_t size = sizeof(struct Memory_Profiler_Capture);
 	
-	if (capture->tracked_classes) {
-		size += capture->tracked_classes->num_entries * (sizeof(st_data_t) + sizeof(struct Memory_Profiler_Capture_Allocations));
+	if (capture->tracked) {
+		size += capture->tracked->num_entries * (sizeof(st_data_t) + sizeof(struct Memory_Profiler_Capture_Allocations));
 	}
 	
 	return size;
 }
 
 // Foreach callback for st_foreach_with_replace (iteration logic).
-static int Memory_Profiler_Capture_tracked_classes_foreach(st_data_t key, st_data_t value, st_data_t argp, int error) {
+static int Memory_Profiler_Capture_tracked_foreach(st_data_t key, st_data_t value, st_data_t argp, int error) {
 	return ST_REPLACE;
 }
 
 // Replace callback for st_foreach_with_replace (update logic).
-static int Memory_Profiler_Capture_tracked_classes_update(st_data_t *key, st_data_t *value, st_data_t argp, int existing) {
+static int Memory_Profiler_Capture_tracked_update(st_data_t *key, st_data_t *value, st_data_t argp, int existing) {
 	// Update wrapped Allocations VALUE if it moved:
 	VALUE old_allocations = (VALUE)*value;
 	VALUE new_allocations = rb_gc_location(old_allocations);
@@ -97,13 +142,45 @@ static int Memory_Profiler_Capture_tracked_classes_update(st_data_t *key, st_dat
 	return ST_CONTINUE;
 }
 
+// Foreach callback for states table compaction (iteration logic).
+static int Memory_Profiler_Capture_states_foreach(st_data_t key, st_data_t value, st_data_t argp, int error) {
+	return ST_REPLACE;
+}
+
+// Replace callback for states table compaction (update logic).
+static int Memory_Profiler_Capture_states_update(st_data_t *key, st_data_t *value, st_data_t argp, int existing) {
+	// Update VALUEs in the state if they moved
+	struct Memory_Profiler_Capture_State *state = (struct Memory_Profiler_Capture_State *)*value;
+	
+	VALUE old_state = state->data;
+	VALUE new_state = rb_gc_location(old_state);
+	if (old_state != new_state) {
+		state->data = new_state;
+	}
+	
+	VALUE old_allocations = state->allocations;
+	VALUE new_allocations = rb_gc_location(old_allocations);
+	if (old_allocations != new_allocations) {
+		state->allocations = new_allocations;
+	}
+	
+	return ST_CONTINUE;
+}
+
 static void Memory_Profiler_Capture_compact(void *ptr) {
 	struct Memory_Profiler_Capture *capture = ptr;
 	
-	// Update tracked_classes keys and allocations values in-place:
-	if (capture->tracked_classes && capture->tracked_classes->num_entries > 0) {
-		if (st_foreach_with_replace(capture->tracked_classes, Memory_Profiler_Capture_tracked_classes_foreach, Memory_Profiler_Capture_tracked_classes_update, 0)) {
-			rb_raise(rb_eRuntimeError, "tracked_classes modified during GC compaction");
+	// Update tracked keys and allocations values in-place:
+	if (capture->tracked && capture->tracked->num_entries > 0) {
+		if (st_foreach_with_replace(capture->tracked, Memory_Profiler_Capture_tracked_foreach, Memory_Profiler_Capture_tracked_update, 0)) {
+			rb_raise(rb_eRuntimeError, "tracked modified during GC compaction");
+		}
+	}
+	
+	// Update states table state VALUEs in-place:
+	if (capture->states && capture->states->num_entries > 0) {
+		if (st_foreach_with_replace(capture->states, Memory_Profiler_Capture_states_foreach, Memory_Profiler_Capture_states_update, 0)) {
+			rb_raise(rb_eRuntimeError, "states modified during GC compaction");
 		}
 	}
 }
@@ -138,7 +215,8 @@ const char *event_flag_name(rb_event_flag_t event_flag) {
 }
 
 // Process a NEWOBJ event. All allocation tracking logic is here.
-static void Memory_Profiler_Capture_process_newobj(VALUE self, VALUE klass, VALUE object) {
+// object_id parameter is the Integer object_id, NOT the raw object.
+static void Memory_Profiler_Capture_process_newobj(VALUE self, VALUE klass, VALUE object_id) {
 	struct Memory_Profiler_Capture *capture;
 	TypedData_Get_Struct(self, struct Memory_Profiler_Capture, &Memory_Profiler_Capture_type, capture);
 	
@@ -153,7 +231,7 @@ static void Memory_Profiler_Capture_process_newobj(VALUE self, VALUE klass, VALU
 	VALUE allocations;
 	struct Memory_Profiler_Capture_Allocations *record;
 	
-	if (st_lookup(capture->tracked_classes, (st_data_t)klass, &allocations_data)) {
+	if (st_lookup(capture->tracked, (st_data_t)klass, &allocations_data)) {
 		// Existing record
 		allocations = (VALUE)allocations_data;
 		record = Memory_Profiler_Allocations_get(allocations);
@@ -164,67 +242,75 @@ static void Memory_Profiler_Capture_process_newobj(VALUE self, VALUE klass, VALU
 		record->callback = Qnil;
 		record->new_count = 1;
 		record->free_count = 0;
-		record->states = st_init_numtable();
 		
 		allocations = Memory_Profiler_Allocations_wrap(record);
-		st_insert(capture->tracked_classes, (st_data_t)klass, (st_data_t)allocations);
+		st_insert(capture->tracked, (st_data_t)klass, (st_data_t)allocations);
 		RB_OBJ_WRITTEN(self, Qnil, klass);
 		RB_OBJ_WRITTEN(self, Qnil, allocations);
 	}
 	
-	// Only store state if there's a callback
+	// Get state from callback (if present)
+	VALUE data = Qnil;
 	if (!NIL_P(record->callback)) {
-		VALUE state = rb_funcall(record->callback, rb_intern("call"), 3, klass, sym_newobj, Qnil);
-		
-		// Store state using object as key (works because object is alive):
-		st_insert(record->states, (st_data_t)object, (st_data_t)state);
-	} else {
-		// Store state as nil:
-		st_insert(record->states, (st_data_t)object, (st_data_t)Qnil);
+		data = rb_funcall(record->callback, rb_intern("call"), 3, klass, sym_newobj, Qnil);
 	}
-
+	
+	// Create and store state state in central states table
+	struct Memory_Profiler_Capture_State *state = ALLOC(struct Memory_Profiler_Capture_State);
+	state->klass = klass;
+	state->data = data;
+	state->allocations = allocations;
+	
+	st_insert(capture->states, (st_data_t)object_id, (st_data_t)state);
+	
+	// Write barriers for VALUEs we're storing
+	RB_OBJ_WRITTEN(self, Qnil, klass);
+	RB_OBJ_WRITTEN(self, Qnil, data);
+	RB_OBJ_WRITTEN(self, Qnil, allocations);
+	
 	// Resume the capture:
 	capture->paused -= 1;
 }
 
 // Process a FREEOBJ event. All deallocation tracking logic is here.
-static void Memory_Profiler_Capture_process_freeobj(VALUE capture_value, VALUE klass, VALUE object) {
+// object_id parameter is the Integer object_id, NOT the raw object.
+// NOTE: klass parameter can be NULL for FREEOBJ events, so we don't use it!
+static void Memory_Profiler_Capture_process_freeobj(VALUE capture_value, VALUE klass, VALUE object_id) {
 	struct Memory_Profiler_Capture *capture;
 	TypedData_Get_Struct(capture_value, struct Memory_Profiler_Capture, &Memory_Profiler_Capture_type, capture);
 	
 	// Pause the capture to prevent infinite loop:
 	capture->paused += 1;
 	
-	// Look up allocations record for this class
-	st_data_t allocations_data;
-	if (!st_lookup(capture->tracked_classes, (st_data_t)klass, &allocations_data)) {
-		// The class is not tracked, so we are not tracking this object.
+	// Look up the object_id in the central states table
+	// We use object_id because klass can be NULL in FREEOBJ events!
+	st_data_t state_data;
+	if (!st_delete(capture->states, (st_data_t *)&object_id, &state_data)) {
+		// This object_id is not in our states table, so we're not tracking it
 		goto done;
 	}
 	
-	VALUE allocations = (VALUE)allocations_data;
+	// Extract information from the state
+	struct Memory_Profiler_Capture_State *state = (struct Memory_Profiler_Capture_State *)state_data;
+	klass = state->klass;  // Use class from state, not parameter
+	VALUE data = state->data;
+	VALUE allocations = state->allocations;
 	struct Memory_Profiler_Capture_Allocations *record = Memory_Profiler_Allocations_get(allocations);
 	
-	if (!record->states) {
-		// There is no state table for this class, so we are not tracking it.
-		goto done;
+	// Increment global free count
+	capture->free_count++;
+	
+	// Increment per-class free count
+	record->free_count++;
+	
+	// Call callback if present
+	if (!NIL_P(record->callback) && !NIL_P(data)) {
+		rb_funcall(record->callback, rb_intern("call"), 3, klass, sym_freeobj, data);
 	}
 	
-	st_data_t state_data;
-	if (st_delete(record->states, (st_data_t *)&object, &state_data)) {
-		VALUE state = (VALUE)state_data;
-		
-		// Increment global free count
-		capture->free_count++;
-		
-		// Increment per-class free count
-		record->free_count++;
-		
-		if (!NIL_P(record->callback) && !NIL_P(state)) {
-			rb_funcall(record->callback, rb_intern("call"), 3, klass, sym_freeobj, state);
-		}
-	}
-
+	// Free the state struct
+	xfree(state);
+	
 done:
 	// Resume the capture:
 	capture->paused -= 1;
@@ -283,11 +369,11 @@ int Memory_Profiler_Capture_trackable_p(VALUE object) {
 
 // Event hook callback with RAW_ARG
 // Signature: (VALUE data, rb_trace_arg_t *trace_arg)
-static void Memory_Profiler_Capture_event_callback(VALUE data, void *ptr) {
+static void Memory_Profiler_Capture_event_callback(VALUE self, void *ptr) {
 	rb_trace_arg_t *trace_arg = (rb_trace_arg_t *)ptr;
 	
 	struct Memory_Profiler_Capture *capture;
-	TypedData_Get_Struct(data, struct Memory_Profiler_Capture, &Memory_Profiler_Capture_type, capture);
+	TypedData_Get_Struct(self, struct Memory_Profiler_Capture, &Memory_Profiler_Capture_type, capture);
 	
 	VALUE object = rb_tracearg_object(trace_arg);
 	
@@ -295,37 +381,27 @@ static void Memory_Profiler_Capture_event_callback(VALUE data, void *ptr) {
 	if (!Memory_Profiler_Capture_trackable_p(object)) return;
 	
 	rb_event_flag_t event_flag = rb_tracearg_event_flag(trace_arg);
-	VALUE klass = rb_class_of(object);
-	if (!klass) return;
 	
-	if (DEBUG) {
-		const char *klass_name = "(ignored)";
-		if (event_flag == RUBY_INTERNAL_EVENT_NEWOBJ) {
-			klass_name = rb_class2name(klass);
-		}
-		fprintf(stderr, "Memory_Profiler_Capture_event_callback: object=%p, event_flag=%s, klass=%s\n", (void*)object, event_flag_name(event_flag), klass_name);
-	}
-
 	if (event_flag == RUBY_INTERNAL_EVENT_NEWOBJ) {
 		// Skip NEWOBJ if disabled (during callback) to prevent infinite recursion
 		if (capture->paused) return;
 		
-		// Check if class is already freed (T_NONE). This can happen when:
-		// It's safe to unconditionally call here:
-		object = rb_obj_id(object);
-
-		Memory_Profiler_Events_enqueue(MEMORY_PROFILER_EVENT_TYPE_NEWOBJ, data, klass, object);
+		VALUE klass = rb_obj_class(object);
+		if (!klass) return;
+				
+		// Convert to object_id for storage (Integer VALUE).
+		// It's safe to unconditionally call rb_obj_id during NEWOBJ.
+		VALUE object_id = rb_obj_id(object);
+		
+		Memory_Profiler_Events_enqueue(MEMORY_PROFILER_EVENT_TYPE_NEWOBJ, self, klass, object_id);
 	} else if (event_flag == RUBY_INTERNAL_EVENT_FREEOBJ) {
 		// We only care about objects that have been seen before (i.e. have an object ID):
 		if (RB_FL_TEST(object, FL_SEEN_OBJ_ID)) {
-			// For freeobj, we only care about klasses that we are tracking.
-			// This prevents us from enqueuing klass objects that might be freed.
-			if (!st_lookup(capture->tracked_classes, (st_data_t)klass, NULL)) return;
+			// Convert to object_id for storage (Integer VALUE).
+			// It's only safe to call rb_obj_id if the object already has an object ID.
+			VALUE object_id = rb_obj_id(object);
 			
-			// It's only safe to call here if the object already has an object ID.
-			object = rb_obj_id(object);
-			
-			Memory_Profiler_Events_enqueue(MEMORY_PROFILER_EVENT_TYPE_FREEOBJ, data, klass, object);
+			Memory_Profiler_Events_enqueue(MEMORY_PROFILER_EVENT_TYPE_FREEOBJ, self, Qnil, object_id);
 		}
 	}
 }
@@ -339,10 +415,17 @@ static VALUE Memory_Profiler_Capture_alloc(VALUE klass) {
 		rb_raise(rb_eRuntimeError, "Failed to allocate Memory::Profiler::Capture");
 	}
 	
-	capture->tracked_classes = st_init_numtable();
+	capture->tracked = st_init_numtable();
 	
-	if (!capture->tracked_classes) {
-		rb_raise(rb_eRuntimeError, "Failed to initialize hash table");
+	if (!capture->tracked) {
+		rb_raise(rb_eRuntimeError, "Failed to initialize tracked hash table");
+	}
+	
+	// Initialize central states table (object_id => State_Tuple)
+	capture->states = st_init_numtable();
+	
+	if (!capture->states) {
+		rb_raise(rb_eRuntimeError, "Failed to initialize states hash table");
 	}
 	
 	// Initialize allocation tracking counters
@@ -424,7 +507,7 @@ static VALUE Memory_Profiler_Capture_track(int argc, VALUE *argv, VALUE self) {
 	st_data_t allocations_data;
 	VALUE allocations;
 	
-	if (st_lookup(capture->tracked_classes, (st_data_t)klass, &allocations_data)) {
+	if (st_lookup(capture->tracked, (st_data_t)klass, &allocations_data)) {
 		allocations = (VALUE)allocations_data;
 		struct Memory_Profiler_Capture_Allocations *record = Memory_Profiler_Allocations_get(allocations);
 		RB_OBJ_WRITE(self, &record->callback, callback);
@@ -433,12 +516,12 @@ static VALUE Memory_Profiler_Capture_track(int argc, VALUE *argv, VALUE self) {
 		RB_OBJ_WRITE(self, &record->callback, callback);
 		record->new_count = 0;
 		record->free_count = 0;
-		record->states = st_init_numtable();
+		// NOTE: States table removed - now at Capture level
 		
 		// Wrap the record in a VALUE
 		allocations = Memory_Profiler_Allocations_wrap(record);
 		
-		st_insert(capture->tracked_classes, (st_data_t)klass, (st_data_t)allocations);
+		st_insert(capture->tracked, (st_data_t)klass, (st_data_t)allocations);
 		RB_OBJ_WRITTEN(self, Qnil, klass);
 		RB_OBJ_WRITTEN(self, Qnil, allocations);
 	}
@@ -452,7 +535,7 @@ static VALUE Memory_Profiler_Capture_untrack(VALUE self, VALUE klass) {
 	TypedData_Get_Struct(self, struct Memory_Profiler_Capture, &Memory_Profiler_Capture_type, capture);
 	
 	st_data_t allocations_data;
-	if (st_delete(capture->tracked_classes, (st_data_t *)&klass, &allocations_data)) {
+	if (st_delete(capture->tracked, (st_data_t *)&klass, &allocations_data)) {
 		// The wrapped Allocations VALUE will be GC'd naturally
 		// No manual cleanup needed
 	}
@@ -465,7 +548,7 @@ static VALUE Memory_Profiler_Capture_tracking_p(VALUE self, VALUE klass) {
 	struct Memory_Profiler_Capture *capture;
 	TypedData_Get_Struct(self, struct Memory_Profiler_Capture, &Memory_Profiler_Capture_type, capture);
 	
-	return st_lookup(capture->tracked_classes, (st_data_t)klass, NULL) ? Qtrue : Qfalse;
+	return st_lookup(capture->tracked, (st_data_t)klass, NULL) ? Qtrue : Qfalse;
 }
 
 // Get count of live objects for a specific class (O(1) lookup!)
@@ -474,7 +557,7 @@ static VALUE Memory_Profiler_Capture_retained_count_of(VALUE self, VALUE klass) 
 	TypedData_Get_Struct(self, struct Memory_Profiler_Capture, &Memory_Profiler_Capture_type, capture);
 	
 	st_data_t allocations_data;
-	if (st_lookup(capture->tracked_classes, (st_data_t)klass, &allocations_data)) {
+	if (st_lookup(capture->tracked, (st_data_t)klass, &allocations_data)) {
 		VALUE allocations = (VALUE)allocations_data;
 		struct Memory_Profiler_Capture_Allocations *record = Memory_Profiler_Allocations_get(allocations);
 		if (record->free_count <= record->new_count) {
@@ -486,7 +569,7 @@ static VALUE Memory_Profiler_Capture_retained_count_of(VALUE self, VALUE klass) 
 }
 
 // Iterator to reset each class record
-static int Memory_Profiler_Capture_tracked_classes_clear(st_data_t key, st_data_t value, st_data_t arg) {
+static int Memory_Profiler_Capture_tracked_clear(st_data_t key, st_data_t value, st_data_t arg) {
 	VALUE allocations = (VALUE)value;
 	
 	Memory_Profiler_Allocations_clear(allocations);
@@ -508,7 +591,13 @@ static VALUE Memory_Profiler_Capture_clear(VALUE self) {
 	}
 	
 	// Reset all counts to 0 (don't free, just reset) - pass self for write barriers:
-	st_foreach(capture->tracked_classes, Memory_Profiler_Capture_tracked_classes_clear, 0);
+	st_foreach(capture->tracked, Memory_Profiler_Capture_tracked_clear, 0);
+	
+	// Clear central states table - free all states and clear the table
+	if (capture->states) {
+		st_foreach(capture->states, Memory_Profiler_Capture_states_free_callback, 0);
+		st_clear(capture->states);
+	}
 	
 	// Reset allocation tracking counters
 	capture->new_count = 0;
@@ -535,7 +624,80 @@ static VALUE Memory_Profiler_Capture_each(VALUE self) {
 	
 	RETURN_ENUMERATOR(self, 0, 0);
 	
-	st_foreach(capture->tracked_classes, Memory_Profiler_Capture_each_allocation, 0);
+	st_foreach(capture->tracked, Memory_Profiler_Capture_each_allocation, 0);
+	
+	return self;
+}
+
+// Struct for filtering states by allocations wrapper during iteration
+struct Memory_Profiler_Each_Object_Args {
+	VALUE allocations;  // The allocations wrapper to filter by (Qnil = no filter)
+};
+
+// Iterator callback for each_object - yields object and state
+static int Memory_Profiler_Capture_each_object_callback(st_data_t key, st_data_t value, st_data_t arg) {
+	VALUE object_id = (VALUE)key;
+	struct Memory_Profiler_Capture_State *state = (struct Memory_Profiler_Capture_State *)value;
+	struct Memory_Profiler_Each_Object_Args *args = (struct Memory_Profiler_Each_Object_Args *)arg;
+	
+	// Filter by allocations if specified
+	if (!NIL_P(args->allocations) && state->allocations != args->allocations) {
+		return ST_CONTINUE;
+	}
+	
+	// Convert object_id to object using _id2ref
+	VALUE object = rb_funcall(rb_mObjectSpace, id_id2ref, 1, object_id);
+	
+	// Yield object and state
+	rb_yield_values(2, object, state->data);
+	
+	return ST_CONTINUE;
+}
+
+// Iterate over tracked objects, optionally filtered by class
+// Called as: 
+//   capture.each_object(String) { |object, state| ... }  # Specific class
+//   capture.each_object { |object, state| ... }          # All objects
+static VALUE Memory_Profiler_Capture_each_object(int argc, VALUE *argv, VALUE self) {
+	struct Memory_Profiler_Capture *capture;
+	TypedData_Get_Struct(self, struct Memory_Profiler_Capture, &Memory_Profiler_Capture_type, capture);
+	
+	VALUE klass;
+	rb_scan_args(argc, argv, "01", &klass);
+	
+	RETURN_ENUMERATOR(self, argc, argv);
+	
+	// Process all pending events and run GC to clean up stale object_ids
+	Memory_Profiler_Events_process_all();
+	rb_gc_start();
+	VALUE was_enabled = rb_gc_disable();
+	Memory_Profiler_Events_process_all();
+	
+	// If class provided, look up its allocations wrapper
+	VALUE allocations = Qnil;
+	if (!NIL_P(klass)) {
+		st_data_t allocations_data;
+		if (st_lookup(capture->tracked, (st_data_t)klass, &allocations_data)) {
+			allocations = (VALUE)allocations_data;
+		} else {
+			// Class not tracked - nothing to iterate
+			if (RTEST(was_enabled)) {
+				rb_gc_enable();
+			}
+			return self;
+		}
+	}
+	
+	// Iterate states table, optionally filtering by allocations wrapper
+	struct Memory_Profiler_Each_Object_Args args = { .allocations = allocations };
+	
+	if (capture->states) {
+		st_foreach(capture->states, Memory_Profiler_Capture_each_object_callback, (st_data_t)&args);
+	}
+	
+	if (RTEST(was_enabled)) {
+		rb_gc_enable();
+	}
 	
 	return self;
 }
@@ -546,7 +708,7 @@ static VALUE Memory_Profiler_Capture_aref(VALUE self, VALUE klass) {
 	TypedData_Get_Struct(self, struct Memory_Profiler_Capture, &Memory_Profiler_Capture_type, capture);
 	
 	st_data_t allocations_data;
-	if (st_lookup(capture->tracked_classes, (st_data_t)klass, &allocations_data)) {
+	if (st_lookup(capture->tracked, (st_data_t)klass, &allocations_data)) {
 		return (VALUE)allocations_data;
 	}
 	
@@ -559,17 +721,20 @@ struct Memory_Profiler_Allocations_Statistics {
 	VALUE per_class_counts;
 };
 
-// Iterator callback to count states per class
+// Iterator callback to count states per class (from central states table)
 static int Memory_Profiler_Capture_count_states(st_data_t key, st_data_t value, st_data_t argument) {
 	struct Memory_Profiler_Allocations_Statistics *statistics = (struct Memory_Profiler_Allocations_Statistics *)argument;
-	VALUE klass = (VALUE)key;
-	VALUE allocations = (VALUE)value;
-	struct Memory_Profiler_Capture_Allocations *record = Memory_Profiler_Allocations_get(allocations);
+	struct Memory_Profiler_Capture_State *state = (struct Memory_Profiler_Capture_State *)value;
+	VALUE klass = state->klass;
 	
-	size_t states_count = record->states ? record->states->num_entries : 0;
-	statistics->total_tracked_objects += states_count;
+	// Increment total count
+	statistics->total_tracked_objects++;
 	
-	rb_hash_aset(statistics->per_class_counts, klass, SIZET2NUM(states_count));
+	// Increment per-class count
+	VALUE current_count = rb_hash_lookup(statistics->per_class_counts, klass);
+	size_t count = NIL_P(current_count) ? 1 : NUM2SIZET(current_count) + 1;
+	rb_hash_aset(statistics->per_class_counts, klass, SIZET2NUM(count));
+	
 	return ST_CONTINUE;
 }
 
@@ -582,15 +747,21 @@ static VALUE Memory_Profiler_Capture_statistics(VALUE self) {
 	VALUE statistics = rb_hash_new();
 	
 	// Tracked classes count
-	rb_hash_aset(statistics, ID2SYM(rb_intern("tracked_classes_count")), SIZET2NUM(capture->tracked_classes->num_entries));
+	rb_hash_aset(statistics, ID2SYM(rb_intern("tracked_count")), SIZET2NUM(capture->tracked->num_entries));
+	
+	// Total states table size
+	size_t states_table_size = capture->states ? capture->states->num_entries : 0;
+	rb_hash_aset(statistics, ID2SYM(rb_intern("states_table_size")), SIZET2NUM(states_table_size));
 		
-	// Count states entries for each tracked class
+	// Count states entries for each class (iterate central states table)
 	struct Memory_Profiler_Allocations_Statistics allocations_statistics = {
 		.total_tracked_objects = 0,
 		.per_class_counts = rb_hash_new()
 	};
 	
-	st_foreach(capture->tracked_classes, Memory_Profiler_Capture_count_states, (st_data_t)&allocations_statistics);
+	if (capture->states) {
+		st_foreach(capture->states, Memory_Profiler_Capture_count_states, (st_data_t)&allocations_statistics);
+	}
 	
 	rb_hash_aset(statistics, ID2SYM(rb_intern("total_tracked_objects")), SIZET2NUM(allocations_statistics.total_tracked_objects));
 	rb_hash_aset(statistics, ID2SYM(rb_intern("tracked_objects_per_class")), allocations_statistics.per_class_counts);
@@ -643,12 +814,18 @@ void Init_Memory_Profiler_Capture(VALUE Memory_Profiler)
 	rb_define_method(Memory_Profiler_Capture, "tracking?", Memory_Profiler_Capture_tracking_p, 1);
 	rb_define_method(Memory_Profiler_Capture, "retained_count_of", Memory_Profiler_Capture_retained_count_of, 1);
 	rb_define_method(Memory_Profiler_Capture, "each", Memory_Profiler_Capture_each, 0);
+	rb_define_method(Memory_Profiler_Capture, "each_object", Memory_Profiler_Capture_each_object, -1);  // -1 = variable args
 	rb_define_method(Memory_Profiler_Capture, "[]", Memory_Profiler_Capture_aref, 1);
 	rb_define_method(Memory_Profiler_Capture, "clear", Memory_Profiler_Capture_clear, 0);
 	rb_define_method(Memory_Profiler_Capture, "statistics", Memory_Profiler_Capture_statistics, 0);
 	rb_define_method(Memory_Profiler_Capture, "new_count", Memory_Profiler_Capture_new_count, 0);
 	rb_define_method(Memory_Profiler_Capture, "free_count", Memory_Profiler_Capture_free_count, 0);
 	rb_define_method(Memory_Profiler_Capture, "retained_count", Memory_Profiler_Capture_retained_count, 0);
+	
+	// Cache ObjectSpace module for _id2ref calls
+	rb_mObjectSpace = rb_const_get(rb_cObject, rb_intern("ObjectSpace"));
+	rb_gc_register_mark_object(rb_mObjectSpace);
+	id_id2ref = rb_intern("_id2ref");
 	
 	// Initialize Allocations class
 	Init_Memory_Profiler_Allocations(Memory_Profiler);

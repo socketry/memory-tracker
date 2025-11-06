@@ -1,11 +1,10 @@
 // Released under the MIT License.
 // Copyright, 2025, by Samuel Williams.
 
-#include "ruby.h"
-#include "ruby/debug.h"
-
 #include "events.h"
 #include "capture.h"
+
+#include <ruby/debug.h>
 #include <stdio.h>
 
 enum {
@@ -176,10 +175,10 @@ int Memory_Profiler_Events_enqueue(
 	enum Memory_Profiler_Event_Type type,
 	VALUE capture,
 	VALUE klass,
-	VALUE object
+	VALUE object_id
 ) {
 	struct Memory_Profiler_Events *events = Memory_Profiler_Events_instance();
-
+	
 	// Always enqueue to the available queue - it won't be touched during processing:
 	struct Memory_Profiler_Event *event = Memory_Profiler_Queue_push(events->available);
 	if (event) {
@@ -188,7 +187,7 @@ int Memory_Profiler_Events_enqueue(
 		// Use write barriers when storing VALUEs (required for RUBY_TYPED_WB_PROTECTED):
 		RB_OBJ_WRITE(events->self, &event->capture, capture);
 		RB_OBJ_WRITE(events->self, &event->klass, klass);
-		RB_OBJ_WRITE(events->self, &event->object, object);
+		RB_OBJ_WRITE(events->self, &event->object, object_id);
 		
 		if (DEBUG) fprintf(stderr, "Queued %s to available queue, size: %zu\n", 
 			Memory_Profiler_Event_Type_name(type), events->available->count);

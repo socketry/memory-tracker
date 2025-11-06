@@ -31,7 +31,7 @@ describe Memory::Profiler::Allocations do
 	
 	with "#to_json" do
 		it "converts to JSON string" do
-			require 'json'
+			require "json"
 			
 			json_string = allocations.to_json
 			
@@ -53,7 +53,7 @@ describe Memory::Profiler::Allocations do
 			capture.start
 			
 			# Create some objects
-			10.times { Hash.new }
+			10.times{Hash.new}
 			
 			# Get allocations object
 			allocations = capture[Hash]

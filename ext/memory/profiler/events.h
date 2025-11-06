@@ -23,7 +23,8 @@ struct Memory_Profiler_Event {
 	// The class of the object:
 	VALUE klass;
 
-	// The object itself (for NEWOBJ and FREEOBJ):
+	// The object_id (Integer VALUE) - NOT the raw object.
+	// We store object_id to avoid referencing objects that should be freed.
 	VALUE object;
 };
 
@@ -32,12 +33,13 @@ struct Memory_Profiler_Events;
 struct Memory_Profiler_Events* Memory_Profiler_Events_instance(void);
 
 // Enqueue an event to the global queue.
+// object parameter should be the object_id (Integer), not the raw object.
 // Returns non-zero on success, zero on failure.
 int Memory_Profiler_Events_enqueue(
 	enum Memory_Profiler_Event_Type type,
 	VALUE capture,
 	VALUE klass,
-	VALUE object
+	VALUE object_id
 );
 
 // Process all queued events immediately (flush the queue)

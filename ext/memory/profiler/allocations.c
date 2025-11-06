@@ -2,75 +2,28 @@
 // Copyright, 2025, by Samuel Williams.
 
 #include "allocations.h"
-
-#include "ruby.h"
-#include "ruby/debug.h"
-#include "ruby/st.h"
+#include "events.h"
+#include <ruby/debug.h>
 #include <stdio.h>
 
 static VALUE Memory_Profiler_Allocations = Qnil;
 
-// Helper to mark states table (object => state)
-static int Memory_Profiler_Allocations_states_mark(st_data_t key, st_data_t value, st_data_t arg) {
-	// We don't want the key to move - we can't rehash the table if it does.
-	rb_gc_mark((VALUE)key);
-	
-	VALUE state = (VALUE)value;
-	rb_gc_mark_movable(state);
-	return ST_CONTINUE;
-}
-
-// Foreach callback for st_foreach_with_replace (iteration logic)
-static int Memory_Profiler_Allocations_states_foreach(st_data_t key, st_data_t value, st_data_t argp, int error) {
-	// Return ST_REPLACE to trigger the replace callback for each entry
-	return ST_REPLACE;
-}
-
-// Replace callback for st_foreach_with_replace to update states during compaction
-static int Memory_Profiler_Allocations_states_compact(st_data_t *key, st_data_t *value, st_data_t data, int existing) {
-	*value = (st_data_t)rb_gc_location((VALUE)*value);
-	
-	return ST_CONTINUE;
-}
-
 static void Memory_Profiler_Allocations_mark(void *ptr) {
 	struct Memory_Profiler_Capture_Allocations *record = ptr;
 	
-	if (!record) {
-		return;
-	}
-	
 	rb_gc_mark_movable(record->callback);
-	
-	// Mark states table if it exists
-	if (record->states) {
-		st_foreach(record->states, Memory_Profiler_Allocations_states_mark, 0);
-	}
 }
 
 static void Memory_Profiler_Allocations_free(void *ptr) {
 	struct Memory_Profiler_Capture_Allocations *record = ptr;
 	
-	if (record->states) {
-		st_free_table(record->states);
-	}
-	
 	xfree(record);
 }
 
-// GC compact function for Allocations
 static void Memory_Profiler_Allocations_compact(void *ptr) {
 	struct Memory_Profiler_Capture_Allocations *record = ptr;
 	
-	// Update callback if it moved
 	record->callback = rb_gc_location(record->callback);
-	
-	// Update states table if it exists
-	if (record->states && record->states->num_entries > 0) {
-		if (st_foreach_with_replace(record->states, Memory_Profiler_Allocations_states_foreach, Memory_Profiler_Allocations_states_compact, 0)) {
-			rb_raise(rb_eRuntimeError, "states modified during GC compaction");
-		}
-	}
 }
 
 static const rb_data_type_t Memory_Profiler_Allocations_type = {
@@ -83,25 +36,21 @@ static const rb_data_type_t Memory_Profiler_Allocations_type = {
 	0, 0, RUBY_TYPED_FREE_IMMEDIATELY | RUBY_TYPED_WB_PROTECTED
 };
 
-// Wrap an allocations record
 VALUE Memory_Profiler_Allocations_wrap(struct Memory_Profiler_Capture_Allocations *record) {
 	return TypedData_Wrap_Struct(Memory_Profiler_Allocations, &Memory_Profiler_Allocations_type, record);
 }
 
-// Get allocations record from wrapper
 struct Memory_Profiler_Capture_Allocations* Memory_Profiler_Allocations_get(VALUE self) {
 	struct Memory_Profiler_Capture_Allocations *record;
 	TypedData_Get_Struct(self, struct Memory_Profiler_Capture_Allocations, &Memory_Profiler_Allocations_type, record);
 	return record;
 }
 
-// Allocations#new_count
 static VALUE Memory_Profiler_Allocations_new_count(VALUE self) {
 	struct Memory_Profiler_Capture_Allocations *record = Memory_Profiler_Allocations_get(self);
 	return SIZET2NUM(record->new_count);
 }
 
-// Allocations#free_count
 static VALUE Memory_Profiler_Allocations_free_count(VALUE self) {
 	struct Memory_Profiler_Capture_Allocations *record = Memory_Profiler_Allocations_get(self);
 	return SIZET2NUM(record->free_count);
@@ -110,46 +59,36 @@ static VALUE Memory_Profiler_Allocations_free_count(VALUE self) {
 // Allocations#retained_count
 static VALUE Memory_Profiler_Allocations_retained_count(VALUE self) {
 	struct Memory_Profiler_Capture_Allocations *record = Memory_Profiler_Allocations_get(self);
-	// Handle underflow when free_count > new_count
+	
+	// Handle underflow when free_count > new_count:
 	size_t retained = record->free_count > record->new_count ? 0 : record->new_count - record->free_count;
+
 	return SIZET2NUM(retained);
 }
 
-// Allocations#track { |klass| ... }
 static VALUE Memory_Profiler_Allocations_track(int argc, VALUE *argv, VALUE self) {
 	struct Memory_Profiler_Capture_Allocations *record = Memory_Profiler_Allocations_get(self);
 	
 	VALUE callback;
 	rb_scan_args(argc, argv, "&", &callback);
 	
-	// Use write barrier - self (Allocations wrapper) keeps Capture alive, which keeps callback alive
 	RB_OBJ_WRITE(self, &record->callback, callback);
 	
 	return self;
 }
 
-// Clear/reset allocation counts and state for a record
 void Memory_Profiler_Allocations_clear(VALUE allocations) {
 	struct Memory_Profiler_Capture_Allocations *record = Memory_Profiler_Allocations_get(allocations);
-	record->new_count = 0;   // Reset allocation count
-	record->free_count = 0;  // Reset free count
-	RB_OBJ_WRITE(allocations, &record->callback, Qnil); // Clear callback with write barrier
-	
-	// Clear states - either clear the table or reinitialize
-	if (record->states) {
-		st_clear(record->states);
-	} else {
-		record->states = st_init_numtable();
-	}
+	record->new_count = 0;
+	record->free_count = 0;
+	RB_OBJ_WRITE(allocations, &record->callback, Qnil);
 }
 
-// Allocate a new Allocations object (for testing)
 static VALUE Memory_Profiler_Allocations_allocate(VALUE klass) {
 	struct Memory_Profiler_Capture_Allocations *record = ALLOC(struct Memory_Profiler_Capture_Allocations);
 	record->callback = Qnil;
 	record->new_count = 0;
 	record->free_count = 0;
-	record->states = st_init_numtable();
 	
 	return Memory_Profiler_Allocations_wrap(record);
 }
@@ -165,5 +104,5 @@ void Init_Memory_Profiler_Allocations(VALUE Memory_Profiler)
 	rb_define_method(Memory_Profiler_Allocations, "new_count", Memory_Profiler_Allocations_new_count, 0);
 	rb_define_method(Memory_Profiler_Allocations, "free_count", Memory_Profiler_Allocations_free_count, 0);
 	rb_define_method(Memory_Profiler_Allocations, "retained_count", Memory_Profiler_Allocations_retained_count, 0);
-	rb_define_method(Memory_Profiler_Allocations, "track", Memory_Profiler_Allocations_track, -1);  // -1 to accept block
+	rb_define_method(Memory_Profiler_Allocations, "track", Memory_Profiler_Allocations_track, -1);
 }

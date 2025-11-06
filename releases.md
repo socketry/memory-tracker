@@ -1,5 +1,10 @@
 # Releases
 
+## Unreleased
+
+  - Implement [Cooper-Harvey-Kennedy](https://www.cs.tufts.edu/~nr/cs257/archive/keith-cooper/dom14.pdf) algorithm for finding root objects in memory leaks.
+  - Rework capture to track objects by `object_id` exclusively.
+
 ## v1.3.0
 
   - **Breaking**: Renamed `Capture#count_for` to `Capture#retained_count_of` for better clarity and consistency.

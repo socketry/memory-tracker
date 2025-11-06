@@ -9,6 +9,7 @@ require "objspace"
 require_relative "capture"
 require_relative "allocations"
 require_relative "call_tree"
+require_relative "graph"
 
 module Memory
 	module Profiler
@@ -141,6 +142,28 @@ module Memory
 			def stop
 				@capture.stop
 			end
+
+			# Clear tracking data for a class.
+			def clear(klass)
+				tree = @call_trees[klass]
+				tree&.clear!
+			end
+			
+			# Clear all tracking data.
+			def clear_all!
+				@call_trees.each_value(&:clear!)
+				@capture.clear
+			end
+			
+			# Stop all tracking and clean up.
+			def stop!
+				@capture.stop
+				@call_trees.each_key do |klass|
+					@capture.untrack(klass)
+				end
+				@capture.clear
+				@call_trees.clear
+			end
 			
 			# Run periodic sampling in a loop.
 			#
@@ -210,9 +233,9 @@ module Memory
 				tree = @call_trees[klass] = CallTree.new
 				
 				# Register callback on allocations object:
-				# - On :newobj - returns state (leaf node) which C extension stores
-				# - On :freeobj - receives state back from C extension
-				allocations.track do |klass, event, state|
+				# - On :newobj - returns data (leaf node) which C extension stores
+				# - On :freeobj - receives data back from C extension
+				allocations.track do |klass, event, data|
 					case event
 					when :newobj
 						# Capture call stack and record in tree
@@ -224,8 +247,8 @@ module Memory
 						end
 						# Return nil or the node - C will store whatever we return.
 					when :freeobj
-						# Decrement using the state (leaf node) passed back from then native extension:
-						state&.decrement_path!
+						# Decrement using the data (leaf node) passed back from then native extension:
+						data&.decrement_path!
 					end
 				rescue Exception => error
 					warn "Error in allocation tracking: #{error.message}\n#{error.backtrace.join("\n")}"
@@ -256,45 +279,49 @@ module Memory
 			# Get allocation statistics for a tracked class.
 			#
 			# @parameter klass [Class] The class to get statistics for.
-			# @returns [Hash] Statistics including total, retained, paths, and hotspots.
-			def analyze(klass)
-				call_tree = @call_trees[klass]
+			# @parameter allocation_roots [Boolean] Include call tree showing where allocations occurred (default: true if available).
+			# @parameter retained_roots [Boolean] Compute object graph showing what's retaining allocations (default: true, can be slow for large graphs).
+			# @parameter roots_from [Object] Starting point for retained roots analysis (default: Object).
+			# @returns [Hash] Statistics including allocations, allocation_roots (call tree), and retained_roots (object graph).
+			def analyze(klass, allocation_roots: true, retained_roots: false, retained_objects: true)
+				call_tree_data = @call_trees[klass] if allocation_roots
 				allocations = @capture[klass]
 				
-				return nil unless call_tree or allocations
+				return nil unless call_tree_data or allocations
 				
-				{
+				result = {
 					allocations: allocations&.as_json,
-					call_tree: call_tree&.as_json
 				}
-			end
-			
-			# @deprecated Use {analyze} instead.
-			alias statistics analyze
-			
-			# Clear tracking data for a class.
-			def clear(klass)
-				tree = @call_trees[klass]
-				tree&.clear!
-			end
-			
-			# Clear all tracking data.
-			def clear_all!
-				@call_trees.each_value(&:clear!)
-				@capture.clear
-			end
-			
-			# Stop all tracking and clean up.
-			def stop!
-				@capture.stop
-				@call_trees.each_key do |klass|
-					@capture.untrack(klass)
+				
+				if allocation_roots && call_tree_data
+					result[:allocation_roots] = call_tree_data.as_json
 				end
-				@capture.clear
-				@call_trees.clear
+				
+				if retained_roots
+					result[:retained_roots] = compute_roots(klass)
+				end
+				
+				result
 			end
 			
 		private
+
+			# Compute retaining roots for a class's allocations
+			def compute_roots(klass)
+				graph = Graph.new
+				
+				# Add all tracked objects to the graph
+				# NOTE: States table is now at Capture level, so we use capture.each_object
+				@capture.each_object(klass) do |object, state|
+					graph.add(object)
+				end
+				
+				# Build parent relationships
+				graph.update!
+				
+				# Return roots analysis
+				graph.roots
+			end
 			
 			# Default filter to include all locations.
 			def default_filter

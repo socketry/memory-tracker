@@ -133,7 +133,7 @@ describe Memory::Profiler::Capture do
 		it "calls callback on allocation" do
 			captured_classes = []
 			
-			capture.track(Hash) do |klass, event, state|
+			capture.track(Hash) do |klass, event, data|
 				captured_classes << klass if event == :newobj
 			end
 			
@@ -154,7 +154,7 @@ describe Memory::Profiler::Capture do
 		it "does not call callback when not started" do
 			call_count = 0
 			
-			capture.track(Hash) do |klass, event, state|
+			capture.track(Hash) do |klass, event, data|
 				call_count += 1
 			end
 			
@@ -167,7 +167,7 @@ describe Memory::Profiler::Capture do
 		it "callback can capture caller_locations" do
 			captured_locations = []
 			
-			capture.track(Hash) do |klass, event, state|
+			capture.track(Hash) do |klass, event, data|
 				if event == :newobj
 					locations = caller_locations(1, 3)
 					captured_locations << locations
@@ -254,7 +254,7 @@ describe Memory::Profiler::Capture do
 			count1 = 0
 			count2 = 0
 			
-			capture.track(Hash) do |klass, event, state|
+			capture.track(Hash) do |klass, event, data|
 				count1 += 1 if event == :newobj
 			end
 			
@@ -263,7 +263,7 @@ describe Memory::Profiler::Capture do
 			capture.stop
 			
 			# Track again with different callback
-			capture.track(Hash) do |klass, event, state|
+			capture.track(Hash) do |klass, event, data|
 				count2 += 1 if event == :newobj
 			end
 			
@@ -312,7 +312,7 @@ describe Memory::Profiler::Capture do
 	
 	with "callback edge cases" do
 		it "handles callback that raises exception gracefully" do
-			capture.track(Hash) do |klass, event, state|
+			capture.track(Hash) do |klass, event, data|
 				raise "boom!" if event == :newobj
 			end
 			
@@ -328,7 +328,7 @@ describe Memory::Profiler::Capture do
 		it "handles callback allocating same tracked class" do
 			nested_count = 0
 			
-			capture.track(Hash) do |klass, event, state|
+			capture.track(Hash) do |klass, event, data|
 				# This allocates another Hash during the callback!
 				# The enabled flag prevents infinite recursion
 				if event == :newobj && nested_count < 5
@@ -491,15 +491,15 @@ describe Memory::Profiler::Capture do
 			state_objects = 200.times.map{{index: rand}}
 			state_index = 0
 			
-			capture.track(Hash) do |klass, event, state|
+			capture.track(Hash) do |klass, event, data|
 				if event == :newobj
 					# Return pre-allocated state
 					result = state_objects[state_index]
 					state_index = (state_index + 1) % state_objects.size
 					result
 				elsif event == :freeobj
-					# Just return state, don't allocate
-					state
+					# Just return data, don't allocate
+					data
 				end
 			end
 			
@@ -575,9 +575,9 @@ describe Memory::Profiler::Capture do
 		end
 		
 		it "handles GC compaction during tracking" do
-			capture.track(String) do |klass, event, state|
+			capture.track(String) do |klass, event, data|
 				if event == :newobj
-					# Store a string as state
+					# Store a string as data
 					"allocated"
 				end
 			end
@@ -600,25 +600,25 @@ describe Memory::Profiler::Capture do
 			end
 		end
 		
-		it "handles GC compaction with FREEOBJ events and state" do
+		it "handles GC compaction with FREEOBJ events and data" do
 			# This test specifically targets the bug where FREEOBJ events
 			# kept dying object pointers in object_states during compaction.
-			# The fix removes state from object_states immediately in the handler.
+			# The fix removes data from object_states immediately in the handler.
 			
 			freed_count = 0
 			allocated_count = 0
 			
-			capture.track(Hash) do |klass, event, state|
+			capture.track(Hash) do |klass, event, data|
 				if event == :newobj
 					allocated_count += 1
-					# Return state to be tracked
+					# Return data to be tracked
 					# The enabled flag prevents this allocation from being tracked recursively
 					{allocated_at: Time.now.to_i, index: allocated_count}
 				elsif event == :freeobj
 					freed_count += 1
-					# State should be the hash we returned from newobj
-					expect(state).to be_a(Hash)
-					expect(state[:index]).to be_a(Integer)
+					# Data should be the hash we returned from newobj
+					expect(data).to be_a(Hash)
+					expect(data[:index]).to be_a(Integer)
 				end
 			end
 			
