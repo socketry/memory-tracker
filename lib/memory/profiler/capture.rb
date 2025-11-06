@@ -3,4 +3,4 @@
 # Released under the MIT License.
 # Copyright, 2025, by Samuel Williams.
 
-require "Memory_Profiler"
+require_relative "native"

@@ -81,7 +81,7 @@ describe Memory::Profiler::Graph do
 			# Create a diamond with circular references
 			root = LeakyObject.new
 			
-			objs = 10.times.map { |i| CircularObject.new(i) }
+			objs = 10.times.map{|i| CircularObject.new(i)}
 			
 			# Create circular chain
 			objs.each_with_index do |obj, i|
