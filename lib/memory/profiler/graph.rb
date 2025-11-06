@@ -40,6 +40,9 @@ module Memory
 					@names.clear
 					@parents[Object] = nil
 				end
+
+				# Don't traverse the graph itself:
+				@parents[self] = nil
 				
 				traverse!(from)
 			end
@@ -250,7 +253,7 @@ module Memory
 				iterations = 0
 				
 				until finger1.equal?(finger2)
-					return finger1 if iterations > SAFETY_LIMIT
+					return finger1 if iterations > SEARCH_LIMIT
 					iterations += 1
 					
 					# Prevent infinite loops
