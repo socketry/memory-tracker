@@ -44,7 +44,9 @@ module Memory
 				# Don't traverse the graph itself:
 				@parents[self] = nil
 				
+				Console.info(self, "Traversing from #{from.inspect}")
 				traverse!(from)
+				Console.info(self, "Traversal complete")
 			end
 			
 			def name_for(object, seen = Set.new.compare_by_identity)
