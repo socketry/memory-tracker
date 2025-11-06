@@ -265,7 +265,7 @@ static void Memory_Profiler_Capture_process_newobj(VALUE self, VALUE klass, VALU
 	
 	// Write barriers for VALUEs we're storing
 	RB_OBJ_WRITTEN(self, Qnil, klass);
-	RB_OBJ_WRITTEN(self, Qnil, state);
+	RB_OBJ_WRITTEN(self, Qnil, data);
 	RB_OBJ_WRITTEN(self, Qnil, allocations);
 
 	// Resume the capture:
