@@ -61,7 +61,7 @@ module Memory
 					
 					if parents&.any?
 						names = parents.map do |parent|
-							name_for(parent, seen.dup) + compute_edge_label(parent, object)
+							compute_edge_label(parent, object)
 						end
 						
 						if names.size > 1
@@ -184,7 +184,7 @@ module Memory
 					return @names[object]&.to_s || object.class.name
 				else
 					return "(unknown)"
-				end
+				end.to_s
 			rescue => error
 				# If inspection fails, fall back to class name
 				return "(#{error.class.name}: #{error.message})"
