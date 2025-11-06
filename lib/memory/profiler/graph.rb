@@ -54,7 +54,8 @@ module Memory
 				seen.add(object)
 				
 				if object.is_a?(Module)
-					object.name
+					# Name could be nil if it is anonymous.
+					object.name.to_s
 				elsif object.is_a?(Object)
 					parents = @parents[object]
 					
@@ -63,7 +64,7 @@ module Memory
 							name_for(parent, seen) + compute_edge_label(parent, object)
 						end.join(" | ")
 					else
-						object.class.name
+						object.class.name.to_s
 					end
 				else
 					object.inspect
