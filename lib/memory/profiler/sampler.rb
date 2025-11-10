@@ -9,7 +9,6 @@ require "objspace"
 require_relative "capture"
 require_relative "allocations"
 require_relative "call_tree"
-require_relative "graph"
 
 module Memory
 	module Profiler
@@ -283,7 +282,7 @@ module Memory
 			# @parameter retained_roots [Boolean] Compute object graph showing what's retaining allocations (default: false, can be slow for large graphs).
 			# @parameter retained_addresses [Boolean | Integer] Include memory addresses of retained objects for correlation with heap dumps (default: 1000).
 			# @returns [Hash] Statistics including allocations, allocation_roots (call tree), retained_roots (object graph), and retained_addresses (array of memory addresses)	.
-			def analyze(klass, allocation_roots: true, retained_roots: false, retained_addresses: 1000, retained_minimum: 100)
+			def analyze(klass, allocation_roots: true, retained_addresses: 1000, retained_minimum: 100)
 				unless allocations = @capture[klass]
 					return nil
 				end
@@ -302,10 +301,6 @@ module Memory
 					end
 				end
 				
-				if retained_roots
-					result[:retained_roots] = compute_roots(klass)
-				end
-				
 				if retained_addresses
 					addresses = []
 					@capture.each_object_id(klass) do |object_id, state|
@@ -320,27 +315,6 @@ module Memory
 			end
 			
 		private
-			
-			# Compute retaining roots for a class's allocations.
-			def compute_roots(klass)
-				graph = Graph.new
-				
-				# Add all tracked objects to the graph:
-				@capture.each_object_id(klass) do |object_id, state|
-					begin
-						object = ObjectSpace._id2ref(object_id)
-						graph.add(object)
-					rescue RangeError
-						# Object was recycled, skip it
-					end
-				end
-				
-				# Build parent relationships:
-				graph.update!
-				
-				# Return roots analysis:
-				graph.roots
-			end
 			
 			# Default filter to include all locations.
 			def default_filter

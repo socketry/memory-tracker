@@ -179,7 +179,7 @@ describe Memory::Profiler::Sampler do
 			sampler.track(Hash)
 			
 			# Allocate many hashes
-			hashes = 100.times.map{{}}
+			hashes = 100.times.map{Hash.new}
 			
 			result = sampler.analyze(Hash, allocation_roots: false, retained_addresses: 10)
 			
