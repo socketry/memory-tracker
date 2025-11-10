@@ -306,41 +306,41 @@ module Memory
 					result[:retained_roots] = compute_roots(klass)
 				end
 				
-		if retained_addresses
-			addresses = []
-			@capture.each_object_id(klass) do |object_id, state|
-				addresses << "0x%x" % object_id
-				break if retained_addresses.is_a?(Integer) && addresses.size >= retained_addresses
-			end
-			
-			result[:retained_addresses] = addresses
-		end
+				if retained_addresses
+					addresses = []
+					@capture.each_object_id(klass) do |object_id, state|
+						addresses << "0x%x" % object_id
+						break if retained_addresses.is_a?(Integer) && addresses.size >= retained_addresses
+					end
+					
+					result[:retained_addresses] = addresses
+				end
 				
 				result
 			end
 			
 		private
 			
-		# Compute retaining roots for a class's allocations.
-		def compute_roots(klass)
-			graph = Graph.new
-			
-			# Add all tracked objects to the graph:
-			@capture.each_object_id(klass) do |object_id, state|
-				begin
-					object = ObjectSpace._id2ref(object_id)
-					graph.add(object)
-				rescue RangeError
-					# Object was recycled, skip it
+			# Compute retaining roots for a class's allocations.
+			def compute_roots(klass)
+				graph = Graph.new
+				
+				# Add all tracked objects to the graph:
+				@capture.each_object_id(klass) do |object_id, state|
+					begin
+						object = ObjectSpace._id2ref(object_id)
+						graph.add(object)
+					rescue RangeError
+						# Object was recycled, skip it
+					end
 				end
+				
+				# Build parent relationships:
+				graph.update!
+				
+				# Return roots analysis:
+				graph.roots
 			end
-			
-			# Build parent relationships:
-			graph.update!
-			
-			# Return roots analysis:
-			graph.roots
-		end
 			
 			# Default filter to include all locations.
 			def default_filter
