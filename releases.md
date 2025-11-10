@@ -2,10 +2,11 @@
 
 ## Unreleased
 
-  - Add `Capture#each_object_id` for getting object identifiers.
+  - Add `Capture#each_object` for getting all retained objects.
   - Add `retained_addresses:` option to `Sampler#analyze` to capture addresses.
   - Add `Sampler#analyze(retained_minimum: 100)` - if the retained_size is less than this, the analyse won't proceed.
   - Remove `Memory::Profiler::Graph` - it's too slow for practical use.
+  - Add `Memory::Profiler.address_of(object)` to get the memory address of an object.
 
 ## v1.4.0
 

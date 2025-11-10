@@ -20,11 +20,10 @@ struct Memory_Profiler_Event {
 	// Which Capture instance this event belongs to:
 	VALUE capture;
 	
-	// The class of the object:
+	// The class of the allocated object (Qnil for FREEOBJ):
 	VALUE klass;
 
-	// The object_id (Integer VALUE) - NOT the raw object.
-	// We store object_id to avoid referencing objects that should be freed.
+	// The object pointer being alllocated or freed.
 	VALUE object;
 };
 
@@ -33,13 +32,16 @@ struct Memory_Profiler_Events;
 struct Memory_Profiler_Events* Memory_Profiler_Events_instance(void);
 
 // Enqueue an event to the global queue.
-// object parameter should be the object_id (Integer), not the raw object.
+// object parameter semantics:
+//   - NEWOBJ: the actual object being allocated (queue retains it)
+//   - FREEOBJ: Array with state data for postponed processing
 // Returns non-zero on success, zero on failure.
+// Ruby 3.5 compatible: no FL_SEEN_OBJ_ID or object_id needed
 int Memory_Profiler_Events_enqueue(
 	enum Memory_Profiler_Event_Type type,
 	VALUE capture,
 	VALUE klass,
-	VALUE object_id
+	VALUE object
 );
 
 // Process all queued events immediately (flush the queue)

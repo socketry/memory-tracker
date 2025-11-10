@@ -16,7 +16,7 @@ if ENV.key?("RUBY_DEBUG")
 	append_cflags(["-DRUBY_DEBUG", "-O0"])
 end
 
-$srcs = ["memory/profiler/profiler.c", "memory/profiler/capture.c", "memory/profiler/allocations.c", "memory/profiler/events.c"]
+$srcs = ["memory/profiler/profiler.c", "memory/profiler/capture.c", "memory/profiler/allocations.c", "memory/profiler/events.c", "memory/profiler/table.c"]
 $VPATH << "$(srcdir)/memory/profiler"
 
 # Check for required headers

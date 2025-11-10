@@ -303,8 +303,8 @@ module Memory
 				
 				if retained_addresses
 					addresses = []
-					@capture.each_object_id(klass) do |object_id, state|
-						addresses << "0x%x" % object_id
+					@capture.each_object(klass) do |object, state|
+						addresses << Memory::Profiler.address_of(object)
 						break if retained_addresses.is_a?(Integer) && addresses.size >= retained_addresses
 					end
 					

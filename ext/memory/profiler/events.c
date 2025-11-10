@@ -104,7 +104,10 @@ static void Memory_Profiler_Events_mark_queue(struct Memory_Profiler_Queue *queu
 		
 		rb_gc_mark_movable(event->capture);
 		rb_gc_mark_movable(event->klass);
-		rb_gc_mark_movable(event->object);
+		
+		if (event->type == MEMORY_PROFILER_EVENT_TYPE_NEWOBJ) {
+			rb_gc_mark_movable(event->object);
+		}
 	}
 }
 
@@ -129,7 +132,10 @@ static void Memory_Profiler_Events_compact_queue(struct Memory_Profiler_Queue *q
 		
 		event->capture = rb_gc_location(event->capture);
 		event->klass = rb_gc_location(event->klass);
-		event->object = rb_gc_location(event->object);
+
+		if (event->type == MEMORY_PROFILER_EVENT_TYPE_NEWOBJ) {
+			event->object = rb_gc_location(event->object);
+		}
 	}
 }
 
@@ -175,7 +181,7 @@ int Memory_Profiler_Events_enqueue(
 	enum Memory_Profiler_Event_Type type,
 	VALUE capture,
 	VALUE klass,
-	VALUE object_id
+	VALUE object
 ) {
 	struct Memory_Profiler_Events *events = Memory_Profiler_Events_instance();
 	
@@ -187,7 +193,7 @@ int Memory_Profiler_Events_enqueue(
 		// Use write barriers when storing VALUEs (required for RUBY_TYPED_WB_PROTECTED):
 		RB_OBJ_WRITE(events->self, &event->capture, capture);
 		RB_OBJ_WRITE(events->self, &event->klass, klass);
-		RB_OBJ_WRITE(events->self, &event->object, object_id);
+		RB_OBJ_WRITE(events->self, &event->object, object);
 		
 		if (DEBUG) fprintf(stderr, "Queued %s to available queue, size: %zu\n", 
 			Memory_Profiler_Event_Type_name(type), events->available->count);
