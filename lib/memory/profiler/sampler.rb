@@ -282,7 +282,7 @@ module Memory
 			# @parameter retained_roots [Boolean] Compute object graph showing what's retaining allocations (default: false, can be slow for large graphs).
 			# @parameter retained_addresses [Boolean | Integer] Include memory addresses of retained objects for correlation with heap dumps (default: 1000).
 			# @returns [Hash] Statistics including allocations, allocation_roots (call tree), retained_roots (object graph), and retained_addresses (array of memory addresses)	.
-			def analyze(klass, allocation_roots: true, retained_addresses: 1000, retained_minimum: 100)
+			def analyze(klass, allocation_roots: true, retained_addresses: 100, retained_minimum: 100)
 				unless allocations = @capture[klass]
 					return nil
 				end

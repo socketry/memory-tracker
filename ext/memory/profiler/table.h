@@ -14,8 +14,6 @@ struct Memory_Profiler_Object_Table_Entry {
 	VALUE klass;
 	// User-defined state from callback:
 	VALUE data;
-	// The Allocations wrapper for this class:
-	VALUE allocations;
 };
 
 // Custom object table for tracking allocations during GC.
@@ -25,8 +23,9 @@ struct Memory_Profiler_Object_Table {
 	// Strong reference count: 0 = weak (don't mark keys), >0 = strong (mark keys)
 	int strong;
 
-	size_t capacity;  // Total slots
-	size_t count;     // Used slots
+	size_t capacity;    // Total slots
+	size_t count;       // Used slots (occupied entries)
+	size_t tombstones;  // Deleted slots (tombstone markers)
 	struct Memory_Profiler_Object_Table_Entry *entries;  // System malloc'd array
 };
 

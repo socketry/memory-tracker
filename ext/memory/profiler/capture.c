@@ -20,7 +20,6 @@ static VALUE Memory_Profiler_Capture = Qnil;
 // Event symbols:
 static VALUE sym_newobj, sym_freeobj;
 
-
 // Main capture state (per-instance).
 struct Memory_Profiler_Capture {
 	// Master switch - is tracking active? (set by start/stop).
@@ -199,7 +198,6 @@ static void Memory_Profiler_Capture_process_newobj(VALUE self, VALUE klass, VALU
 	RB_OBJ_WRITTEN(self, Qnil, object);
 	RB_OBJ_WRITE(self, &entry->klass, klass);
 	RB_OBJ_WRITE(self, &entry->data, data);
-	RB_OBJ_WRITE(self, &entry->allocations, allocations);
 	
 	if (DEBUG) fprintf(stderr, "[NEWOBJ] Object inserted into table: %p\n", (void*)object);
 	
@@ -227,7 +225,15 @@ static void Memory_Profiler_Capture_process_freeobj(VALUE capture_value, VALUE u
 	
 	VALUE klass = entry->klass;
 	VALUE data = entry->data;
-	VALUE allocations = entry->allocations;
+	
+	// Look up allocations from tracked table:
+	st_data_t allocations_data;
+	if (!st_lookup(capture->tracked, (st_data_t)klass, &allocations_data)) {
+		// Class not tracked - shouldn't happen, but be defensive:
+		if (DEBUG) fprintf(stderr, "[FREEOBJ] Class not found in tracked: %p\n", (void*)klass);
+		goto done;
+	}
+	VALUE allocations = (VALUE)allocations_data;
 	
 	// Delete by entry pointer (faster - no second lookup!)
 	Memory_Profiler_Object_Table_delete_entry(capture->states, entry);
@@ -596,12 +602,19 @@ static VALUE Memory_Profiler_Capture_each_object_body(VALUE arg) {
 				continue;
 			}
 			
-			// Filter by allocations if specified
-			if (!NIL_P(arguments->allocations)) {
-				if (entry->allocations != arguments->allocations) continue;
+			// Look up allocations from klass
+			st_data_t allocations_data;
+			VALUE allocations = Qnil;
+			if (st_lookup(capture->tracked, (st_data_t)entry->klass, &allocations_data)) {
+				allocations = (VALUE)allocations_data;
 			}
 			
-			rb_yield_values(2, entry->object, entry->allocations);
+			// Filter by allocations if specified
+			if (!NIL_P(arguments->allocations)) {
+				if (allocations != arguments->allocations) continue;
+			}
+			
+			rb_yield_values(2, entry->object, allocations);
 		}
 	}
 	
