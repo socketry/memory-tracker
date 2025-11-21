@@ -1,5 +1,9 @@
 # Releases
 
+## Unreleased
+
+  - Improve performance of object table.
+
 ## v1.5.0
 
   - Add `Capture#each_object` for getting all retained objects.
