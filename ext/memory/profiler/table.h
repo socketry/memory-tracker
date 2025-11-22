@@ -19,10 +19,8 @@ struct Memory_Profiler_Object_Table_Entry {
 // Custom object table for tracking allocations during GC.
 // Uses system malloc/free (not ruby_xmalloc) to be safe during GC compaction.
 // Keys are object addresses (updated during compaction).
+// Table is always weak - object keys are not marked, allowing GC to collect them.
 struct Memory_Profiler_Object_Table {
-	// Strong reference count: 0 = weak (don't mark keys), >0 = strong (mark keys)
-	int strong;
-
 	size_t capacity;    // Total slots
 	size_t count;       // Used slots (occupied entries)
 	size_t tombstones;  // Deleted slots (tombstone markers)
@@ -61,12 +59,4 @@ void Memory_Profiler_Object_Table_compact(struct Memory_Profiler_Object_Table *t
 
 // Get current size
 size_t Memory_Profiler_Object_Table_size(struct Memory_Profiler_Object_Table *table);
-
-// Increment strong reference count
-// When strong > 0, table is strong and will mark object keys during GC
-void Memory_Profiler_Object_Table_increment_strong(struct Memory_Profiler_Object_Table *table);
-
-// Decrement strong reference count
-// When strong == 0, table is weak and will not mark object keys during GC
-void Memory_Profiler_Object_Table_decrement_strong(struct Memory_Profiler_Object_Table *table);
 

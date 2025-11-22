@@ -572,14 +572,10 @@ struct Memory_Profiler_Each_Object_Arguments {
 	VALUE allocations;
 };
 
-// Cleanup function to ensure table is made weak again
+// Cleanup function to re-enable GC
 static VALUE Memory_Profiler_Capture_each_object_ensure(VALUE arg) {
-	struct Memory_Profiler_Each_Object_Arguments *arguments = (struct Memory_Profiler_Each_Object_Arguments *)arg;
-	struct Memory_Profiler_Capture *capture;
-	TypedData_Get_Struct(arguments->self, struct Memory_Profiler_Capture, &Memory_Profiler_Capture_type, capture);
-	
-	// Make table weak again
-	Memory_Profiler_Object_Table_decrement_strong(capture->states);
+	// Re-enable GC (rb_gc_enable returns previous state, but we don't need it)
+	rb_gc_enable();
 	
 	return Qnil;
 }
@@ -639,10 +635,11 @@ static VALUE Memory_Profiler_Capture_each_object(int argc, VALUE *argv, VALUE se
 	
 	RETURN_ENUMERATOR(self, argc, argv);
 	
-	// Make table strong so objects won't be collected during iteration
-	Memory_Profiler_Object_Table_increment_strong(capture->states);
+	// Disable GC to prevent objects from being collected during iteration
+	rb_gc_disable();
 	
-	// Process all pending events and run GC to clean up stale objects:
+	// Process all pending events to clean up stale entries
+	// At this point, all remaining objects in the table should be valid
 	Memory_Profiler_Events_process_all();
 	
 	// If class provided, look up its allocations wrapper
@@ -653,7 +650,8 @@ static VALUE Memory_Profiler_Capture_each_object(int argc, VALUE *argv, VALUE se
 			allocations = (VALUE)allocations_data;
 		} else {
 			// Class not tracked - nothing to iterate
-			Memory_Profiler_Object_Table_decrement_strong(capture->states);
+			// Re-enable GC before returning
+			rb_gc_enable();
 			return self;
 		}
 	}

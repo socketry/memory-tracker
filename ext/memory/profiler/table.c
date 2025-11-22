@@ -37,7 +37,6 @@ struct Memory_Profiler_Object_Table* Memory_Profiler_Object_Table_new(size_t ini
 	table->capacity = initial_capacity > 0 ? initial_capacity : INITIAL_CAPACITY;
 	table->count = 0;
 	table->tombstones = 0;
-	table->strong = 0;  // Start as weak table (strong == 0 means weak)
 	
 	// Use calloc to zero out entries (0 = empty slot)
 	table->entries = calloc(table->capacity, sizeof(struct Memory_Profiler_Object_Table_Entry));
@@ -303,12 +302,7 @@ void Memory_Profiler_Object_Table_mark(struct Memory_Profiler_Object_Table *tabl
 		struct Memory_Profiler_Object_Table_Entry *entry = &table->entries[i];
 		// Skip empty slots and tombstones
 		if (entry->object != 0 && entry->object != TOMBSTONE) {
-			// Mark object key if table is strong (strong > 0)
-			// When weak (strong == 0), object keys can be GC'd (that's how we detect frees)
-			if (table->strong > 0) {
-				rb_gc_mark_movable(entry->object);
-			}
-			
+			// Don't mark object keys - table is weak (object keys can be GC'd, that's how we detect frees)
 			// Always mark the other fields (klass, data) - we own these
 			if (entry->klass) rb_gc_mark_movable(entry->klass);
 			if (entry->data) rb_gc_mark_movable(entry->data);
@@ -411,19 +405,5 @@ void Memory_Profiler_Object_Table_delete_entry(struct Memory_Profiler_Object_Tab
 // Get current size
 size_t Memory_Profiler_Object_Table_size(struct Memory_Profiler_Object_Table *table) {
 	return table->count;
-}
-
-// Increment strong reference count (makes table strong when > 0)
-void Memory_Profiler_Object_Table_increment_strong(struct Memory_Profiler_Object_Table *table) {
-	if (table) {
-		table->strong++;
-	}
-}
-
-// Decrement strong reference count (makes table weak when == 0)
-void Memory_Profiler_Object_Table_decrement_strong(struct Memory_Profiler_Object_Table *table) {
-	if (table && table->strong > 0) {
-		table->strong--;
-	}
 }
 
